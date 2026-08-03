@@ -118,7 +118,7 @@ def test_deploy_gsm8k_issues_tool_then_agent(client, make_token, jwks_doc):
     assert tool_env["HF_TOKEN"]["valueFrom"]["secretKeyRef"]["key"] == "hf-token"
 
     agent_body = json.loads(agent_route.calls.last.request.content)
-    assert agent_body["containerImage"] == "ghcr.io/exgentic/exgentic-a2a-tool-calling:latest"
+    assert agent_body["containerImage"] == "ghcr.io/exgentic/exgentic-a2a-tool_calling:latest"
     agent_env = {e["name"]: e.get("value") for e in agent_body["envVars"]}
     assert agent_env["MCP_URL"] == "http://exgentic-mcp-gsm8k-mcp.team1.svc.cluster.local:8000/mcp"
     assert agent_env["LLM_MODEL"] == "openai/Azure/gpt-4.1"

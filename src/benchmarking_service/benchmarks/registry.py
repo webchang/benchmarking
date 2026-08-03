@@ -69,6 +69,24 @@ def agent_url(defn: "BenchmarkDefinition", agent: str, namespace: str, experimen
     return f"http://{service}.{namespace}.svc.cluster.local:8080"
 
 
+def required_secrets(defn: "BenchmarkDefinition", agent: str) -> list[tuple[str, str]]:
+    """(secret_name, key) pairs the tool + chosen agent mount as env, per the definition.
+
+    Used to render an actionable error when a workload can't become Ready: the service
+    has no secrets API to check existence directly, so it names what the benchmark needs.
+    """
+    envs = list(defn.tool_env)
+    spec = defn.agents.get(agent)
+    if spec is not None:
+        envs += list(spec.extra_env)
+    out: list[tuple[str, str]] = []
+    for e in envs:
+        ref = e.value_from.secret_key_ref if e.value_from is not None else None
+        if ref is not None and (ref.name, ref.key) not in out:
+            out.append((ref.name, ref.key))
+    return out
+
+
 def build_tool_request(defn: "BenchmarkDefinition", namespace: str) -> ToolCreateRequest:
     return ToolCreateRequest(
         name=tool_name(defn.name),
@@ -128,7 +146,7 @@ BENCHMARKS: dict[str, BenchmarkDefinition] = {
         tool_resources=_TOOL_RESOURCES,
         agents={
             "tool_calling": BenchmarkAgentSpec(
-                container_image="ghcr.io/exgentic/exgentic-a2a-tool-calling:latest",
+                container_image="ghcr.io/exgentic/exgentic-a2a-tool_calling:latest",
                 extra_env=[
                     _secret_env("OPENAI_API_KEY", "openai-secret", "apikey"),
                     EnvVar(name="OPENAI_API_BASE", value="https://api.openai.com/v1"),

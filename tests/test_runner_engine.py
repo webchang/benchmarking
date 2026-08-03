@@ -140,6 +140,14 @@ async def test_run_benchmark_serial_when_parallel_one():
 # --- registry / tenant scoping ---
 
 
+def test_required_secrets_lists_tool_and_agent_refs():
+    from benchmarking_service.benchmarks.registry import BENCHMARKS, required_secrets
+
+    secrets = required_secrets(BENCHMARKS["gsm8k"], "tool_calling")
+    assert ("hf-secret", "hf-token") in secrets
+    assert ("openai-secret", "apikey") in secrets
+
+
 def test_run_registry_tenant_isolation():
     reg = RunRegistry()
     req = RunRequest()

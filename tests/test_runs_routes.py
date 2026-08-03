@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 
@@ -10,7 +11,10 @@ from benchmarking_service.app import create_app
 from benchmarking_service.config import settings
 from benchmarking_service.routes import runs as runs_module
 
-from conftest import JWKS_URL, TOKEN_URL
+from conftest import JWKS_URL, ROSSOCTL_URL, TOKEN_URL
+
+TOOL_STATUS_URL = f"{ROSSOCTL_URL}/api/v1/tools/team1/exgentic-mcp-gsm8k"
+AGENT_STATUS_URL = f"{ROSSOCTL_URL}/api/v1/agents/team1/exgentic-a2a-tool-calling-gsm8k"
 
 
 @pytest.fixture
@@ -28,6 +32,12 @@ def _auth(make_token):
 def _mock_auth(jwks_doc):
     respx.get(JWKS_URL).mock(return_value=httpx.Response(200, json=jwks_doc))
     respx.post(TOKEN_URL).mock(return_value=httpx.Response(200, json={"access_token": "svc"}))
+
+
+def _mock_ready(ready=True):
+    body = {"readyStatus": "Ready" if ready else "Not Ready"}
+    respx.get(TOOL_STATUS_URL).mock(return_value=httpx.Response(200, json=body))
+    respx.get(AGENT_STATUS_URL).mock(return_value=httpx.Response(200, json=body))
 
 
 class _FakeMcp:
@@ -79,6 +89,7 @@ def _poll(client, headers, run_id, timeout=5.0):
 @respx.mock
 def test_start_run_returns_202_and_completes(client, make_token, jwks_doc, monkeypatch):
     _mock_auth(jwks_doc)
+    _mock_ready(True)
     _install_fakes(monkeypatch)
 
     r = client.post("/benchmarks/gsm8k/runs", headers=_auth(make_token), json={"max_tasks": 2})
@@ -132,6 +143,7 @@ def test_start_run_ropc_failure_502(client, make_token, jwks_doc, monkeypatch):
 @respx.mock
 def test_list_runs_and_get_unknown(client, make_token, jwks_doc, monkeypatch):
     _mock_auth(jwks_doc)
+    _mock_ready(True)
     _install_fakes(monkeypatch)
 
     start = client.post("/benchmarks/gsm8k/runs", headers=_auth(make_token), json={"max_tasks": 1})
@@ -145,3 +157,55 @@ def test_list_runs_and_get_unknown(client, make_token, jwks_doc, monkeypatch):
 
     missing = client.get("/benchmarks/gsm8k/runs/does-not-exist", headers=_auth(make_token))
     assert missing.status_code == 404
+
+
+@respx.mock
+def test_start_run_tool_not_ready_424_names_secret(client, make_token, jwks_doc, monkeypatch):
+    _mock_auth(jwks_doc)
+    _mock_ready(False)
+    _install_fakes(monkeypatch)
+    r = client.post("/benchmarks/gsm8k/runs", headers=_auth(make_token), json={})
+    assert r.status_code == 424, r.text
+    detail = r.json()["detail"]
+    assert "not Ready" in detail
+    assert "hf-secret" in detail  # names the missing dependency the operator must provide
+
+
+@respx.mock
+def test_start_run_not_deployed_409(client, make_token, jwks_doc, monkeypatch):
+    _mock_auth(jwks_doc)
+    respx.get(TOOL_STATUS_URL).mock(return_value=httpx.Response(404, json={"error": "not found"}))
+    respx.get(AGENT_STATUS_URL).mock(return_value=httpx.Response(404, json={"error": "not found"}))
+    _install_fakes(monkeypatch)
+    r = client.post("/benchmarks/gsm8k/runs", headers=_auth(make_token), json={})
+    assert r.status_code == 409, r.text
+    assert "deploy" in r.json()["detail"].lower()
+
+
+class _WedgedMcp:
+    """Its __aenter__ never returns — models an MCP Service with no ready endpoints."""
+
+    async def __aenter__(self):
+        await asyncio.sleep(3600)
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+@respx.mock
+def test_run_times_out_when_mcp_wedges(client, make_token, jwks_doc, monkeypatch):
+    _mock_auth(jwks_doc)
+    _mock_ready(True)
+    monkeypatch.setattr(
+        runs_module, "_build_clients", lambda *a, **k: (_WedgedMcp(), _FakeA2A())
+    )
+    r = client.post(
+        "/benchmarks/gsm8k/runs",
+        headers=_auth(make_token),
+        json={"max_tasks": 1, "timeout_seconds": 0.3},
+    )
+    assert r.status_code == 202, r.text
+    data = _poll(client, _auth(make_token), r.json()["run_id"])
+    assert data["status"] == "failed"
+    assert "timeout" in data["error"].lower()

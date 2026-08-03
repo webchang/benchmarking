@@ -11,6 +11,7 @@ can be imported without the SDK present — the unit tests inject fakes instead.
 import asyncio
 import json
 import logging
+from datetime import timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +23,10 @@ _BENIGN_DELETE_MARKERS = (
 
 
 class McpEvalSession:
-    def __init__(self, url: str, token: str | None = None):
+    def __init__(self, url: str, token: str | None = None, connect_timeout: float = 30.0):
         self._url = url
         self._headers = {"Authorization": f"Bearer {token}"} if token else None
+        self._connect_timeout = connect_timeout
         self._session = None
         self._http_ctx = None
         self._lock = asyncio.Lock()
@@ -37,11 +39,16 @@ class McpEvalSession:
         except ImportError:  # older SDK spelling
             from mcp.client.streamable_http import streamable_http_client as _http_client
 
-        self._http_ctx = (
-            _http_client(self._url, headers=self._headers)
-            if self._headers
-            else _http_client(self._url)
-        )
+        # Bound the HTTP ops so connecting to an endpoint-less Service (e.g. the MCP
+        # pod never became Ready) fails fast instead of wedging the whole run.
+        kwargs: dict = {"timeout": timedelta(seconds=self._connect_timeout)}
+        if self._headers:
+            kwargs["headers"] = self._headers
+        try:
+            self._http_ctx = _http_client(self._url, **kwargs)
+        except TypeError:  # older SDK without a timeout kwarg
+            kwargs.pop("timeout", None)
+            self._http_ctx = _http_client(self._url, **kwargs)
         read, write, *_ = await self._http_ctx.__aenter__()
         self._session = ClientSession(read, write)
         await self._session.__aenter__()
