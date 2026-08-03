@@ -201,6 +201,47 @@ provisioning flow.
   `preferred_username` principal — this conflicts with the `preferred_username`-based
   authorization check above and is therefore not chosen without also changing that check.
 
+### Workload-provided credentials vs Service-enacted config
+
+A benchmark has its own configuration/credential requirements, and they fall into **two disjoint
+categories** with two distinct handling paths. The dividing line is *who consumes the value*.
+
+**Category A — workload-provided credentials (declared → prechecked → error-if-missing; the
+Service never sets them).** These are consumed by the *deployed workload pods*, not the Service:
+`hf-secret/hf-token` for HuggingFace dataset access, `openai-secret/apikey` for the model
+provider, etc. They are declared in `benchmarks/registry.py` as `secretKeyRef` env on the tool /
+agent, and the full declared list for a given `(benchmark, agent)` is returned by
+`registry.required_secrets()`. Operators provision the backing cluster Secrets **out-of-band**
+(e.g. `kubectl create secret`); the Service never creates, reads, or mutates them.
+
+Instead of touching the cluster, run-start performs a **cluster-API-free workload precheck**
+(`routes/runs.py::_workload_precheck`). The Service never invokes cluster-level APIs — it verifies
+the declared requirements via Rossoctl's readiness signal (over HTTP, the same channel it already
+uses) and, if required data is missing, **returns an error code + reason** rather than proceeding:
+
+- **409** if the tool/agent isn't deployed at all (deploy first);
+- **424** if deployed-but-not-Ready, naming the required cluster Secret(s) from
+  `required_secrets()` the operator must provision (a missing referenced Secret such as `hf-secret`
+  surfaces as a Not-Ready workload, since the Service can't read Secrets to check them directly).
+
+This keeps the Service cluster-agnostic (kind / vanilla k8s / OpenShift): it reports what is missing
+and why; provisioning stays an operator responsibility.
+
+**Category B — Service-enacted config (settable/updatable via the benchmarker-only `config` API).**
+These are consumed by the *Service itself*, so the Service can and does hold them: the **MLflow**
+tracking config and the **S3 credentials for hosting benchmark-result artifacts**. Only parameters
+the Service can actually enact are accepted — `ConfigUpdateRequest` sets `extra="forbid"`, so an
+attempt to smuggle a workload-provided key (e.g. `hf-secret`) through the config API is rejected as
+**422**. This is the concrete guard enforcing the A/B split at the API boundary.
+
+- **Benchmarker-only.** `GET`/`PUT /config` both gate on `require_benchmarker`.
+- **File default + runtime override.** The per-instance file (`InstanceConfig.mlflow`/`.s3`) is the
+  default; `PUT /config` overlays a per-`iss` in-memory override (`RuntimeConfigStore`,
+  field-level merge). The overlay is intentionally ephemeral (lost on restart) — persisting it is a
+  future increment.
+- **Secrets redacted on read.** `GET /config` returns the *effective* (default + override) config
+  with secret-looking fields (`secret_access_key`, `client_secret`, `password`) masked to `***`.
+
 ### Dev/test users: ROPC + seeded credentials (Device Flow is unnecessary here)
 
 For a **dev/test environment**, all non-interactive users (not just `benchmarker`) are

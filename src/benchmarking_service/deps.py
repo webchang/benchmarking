@@ -7,6 +7,7 @@ from .auth.ropc import ROPCLoginError
 from .context import RequestContext
 from .instances import InstanceRegistry
 from .rossoctl.client import RossoctlClient
+from .runtime_config import RuntimeConfigStore
 
 
 def _registry(request: Request) -> InstanceRegistry:
@@ -15,6 +16,10 @@ def _registry(request: Request) -> InstanceRegistry:
 
 def _jwks(request: Request) -> JWKSCache:
     return request.app.state.jwks
+
+
+def config_store(request: Request) -> RuntimeConfigStore:
+    return request.app.state.config_overrides
 
 
 def _bearer(authorization: str | None = Header(default=None)) -> str:

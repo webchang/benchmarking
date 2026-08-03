@@ -1,6 +1,6 @@
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ServiceCredential(BaseModel):
@@ -19,6 +19,21 @@ class MLflowConfig(BaseModel):
     token_url: str | None = None
 
 
+class S3Config(BaseModel):
+    """Service-enacted object store for hosting benchmark-result artifacts.
+
+    Consumed by the Service itself (not the workload pods), so it is set/updated via
+    the benchmarker-only config API rather than provisioned as a cluster Secret.
+    """
+
+    endpoint_url: str | None = None
+    bucket: str | None = None
+    region: str | None = None
+    access_key_id: str | None = None
+    secret_access_key: str | None = None
+    prefix: str | None = None
+
+
 class InstanceConfig(BaseModel):
     """One per-instance config file (instances/<encoded-iss-host>.json).
 
@@ -33,6 +48,29 @@ class InstanceConfig(BaseModel):
     rossoctl_base_url: str
     service_credential: ServiceCredential
     mlflow: MLflowConfig = Field(default_factory=MLflowConfig)
+    s3: S3Config = Field(default_factory=S3Config)
+
+
+class ConfigUpdateRequest(BaseModel):
+    """Benchmarker-only config update. Accepts ONLY parameters the Service can enact.
+
+    `extra="forbid"` is the guard: an attempt to set a workload-provided credential
+    (e.g. `hf-secret`) — which the Service never sets — is rejected as 422. Workload
+    credentials are provisioned out-of-band and verified by the workload precheck.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mlflow: MLflowConfig | None = None
+    s3: S3Config | None = None
+
+
+class ConfigResponse(BaseModel):
+    """Effective Service-enacted config for an instance, with secret fields redacted."""
+
+    iss: str
+    mlflow: MLflowConfig
+    s3: S3Config
 
 
 class HelloResponse(BaseModel):

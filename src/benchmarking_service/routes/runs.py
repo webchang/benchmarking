@@ -79,12 +79,17 @@ def _secret_hint(defn, agent: str) -> str:
     return f" This benchmark requires secret(s): {listed}."
 
 
-async def _ensure_ready(defn, req: RunRequest, client: RossoctlClient) -> None:
-    """Reject the run early if the MCP tool / agent aren't deployed and Ready.
+async def _workload_precheck(defn, req: RunRequest, client: RossoctlClient) -> None:
+    """Cluster-API-free precheck of the workload's required data before job creation.
 
-    A missing referenced Secret (e.g. hf-secret) surfaces here as a Not-Ready workload —
-    the service can't read the Secret object directly, so it names what the benchmark
-    needs and points at the status endpoint.
+    The Service never invokes cluster-level APIs. Instead it verifies the declared
+    workload-provided requirements via Rossoctl's readiness signal (over HTTP) and, if
+    required data is missing, returns an error code + reason rather than proceeding:
+      - 409 if the tool/agent isn't deployed at all (deploy first);
+      - 424 if deployed-but-not-Ready, naming the required cluster Secret(s) the operator
+        must provision (from `required_secrets()` — a missing referenced Secret such as
+        hf-secret surfaces as a Not-Ready workload, since the Service can't read Secrets).
+    Workload credentials are provisioned out-of-band; the Service only checks and reports.
     """
     t_name = reg.tool_name(defn.name)
     a_name = reg.agent_name(defn.name, req.agent, req.experiment)
@@ -136,7 +141,7 @@ async def start_run(
         raise HTTPException(status_code=502, detail=f"upstream login failed: {exc}") from exc
 
     rossoctl_client = RossoctlClient(ctx.instance.rossoctl_base_url, token, request.app.state.http)
-    await _ensure_ready(defn, req, rossoctl_client)
+    await _workload_precheck(defn, req, rossoctl_client)
 
     runs = request.app.state.runs
     run = runs.create(benchmark=name, req=req, iss=ctx.instance.iss)

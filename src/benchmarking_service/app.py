@@ -7,8 +7,9 @@ from fastapi import FastAPI
 from .auth.jwks import JWKSCache
 from .config import settings
 from .instances import InstanceRegistry
-from .routes import agents, benchmark, benchmarks, hello, runs, tools
+from .routes import agents, benchmark, benchmarks, config, hello, runs, tools
 from .runner.registry import RunRegistry
+from .runtime_config import RuntimeConfigStore
 
 
 @asynccontextmanager
@@ -18,6 +19,7 @@ async def lifespan(app: FastAPI):
     app.state.http = httpx.AsyncClient(timeout=settings.http_timeout_seconds)
     app.state.jwks = JWKSCache(app.state.http, settings.jwks_cache_seconds)
     app.state.runs = RunRegistry()
+    app.state.config_overrides = RuntimeConfigStore()
     logging.getLogger(__name__).info(
         "loaded %d instance(s): %s",
         len(app.state.registry),
@@ -39,6 +41,7 @@ def create_app() -> FastAPI:
     app.include_router(tools.router)
     app.include_router(benchmarks.router)
     app.include_router(runs.router)
+    app.include_router(config.router, tags=["config"])
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict:
