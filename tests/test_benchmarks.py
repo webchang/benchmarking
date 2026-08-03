@@ -85,7 +85,7 @@ def test_workload_urls_templated_cross_cluster():
     tmpl = "https://{service}.{namespace}.apps.ykt2.hcp.res.ibm.com"
     assert (
         registry.mcp_url(defn, "team1", tmpl)
-        == "https://exgentic-mcp-gsm8k-mcp.team1.apps.ykt2.hcp.res.ibm.com/mcp"
+        == "https://exgentic-mcp-gsm8k.team1.apps.ykt2.hcp.res.ibm.com/mcp"
     )
     assert (
         registry.agent_url(defn, "tool_calling", "team1", template=tmpl)

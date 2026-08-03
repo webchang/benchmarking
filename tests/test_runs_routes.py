@@ -132,7 +132,7 @@ def test_start_run_dials_templated_endpoints(tmp_path, make_token, jwks_doc, mon
         assert r.status_code == 202, r.text
         _poll(c, headers, r.json()["run_id"])
 
-    assert captured["mcp_url"] == "https://exgentic-mcp-gsm8k-mcp.team1.apps.ykt2.example.com/mcp"
+    assert captured["mcp_url"] == "https://exgentic-mcp-gsm8k.team1.apps.ykt2.example.com/mcp"
     assert captured["agent_url"] == "https://exgentic-a2a-tool-calling-gsm8k.team1.apps.ykt2.example.com"
 
 

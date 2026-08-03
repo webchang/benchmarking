@@ -67,10 +67,15 @@ def mcp_url(defn: "BenchmarkDefinition", namespace: str, template: str | None = 
 
     With `template` (per-instance, `{service}`/`{namespace}` placeholders) the tool lives on
     another cluster reachable via an external route; otherwise it is co-located in-cluster.
+
+    The external route host is the *tool* name: kagenti names the MCP Route after the tool
+    (`exgentic-mcp-gsm8k`), whereas the in-cluster Service carries the extra `-mcp` suffix
+    (`exgentic-mcp-gsm8k-mcp`). So `{service}` is filled with the tool name for the templated
+    (route) form and the `-mcp` Service name for the in-cluster form.
     """
-    service = f"{tool_name(defn.name)}{defn.mcp_service_suffix}"
     if template:
-        return template.format(service=service, namespace=namespace).rstrip("/") + defn.mcp_path
+        return template.format(service=tool_name(defn.name), namespace=namespace).rstrip("/") + defn.mcp_path
+    service = f"{tool_name(defn.name)}{defn.mcp_service_suffix}"
     return f"http://{service}.{namespace}.svc.cluster.local:{defn.mcp_port}{defn.mcp_path}"
 
 
