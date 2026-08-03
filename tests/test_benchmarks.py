@@ -68,6 +68,39 @@ def test_agent_name_experiment_suffix():
     assert registry.agent_name("gsm8k", "tool_calling", "default") == "exgentic-a2a-tool-calling-gsm8k"
 
 
+def test_workload_urls_default_in_cluster():
+    defn = registry.BENCHMARKS["gsm8k"]
+    assert (
+        registry.mcp_url(defn, "team1")
+        == "http://exgentic-mcp-gsm8k-mcp.team1.svc.cluster.local:8000/mcp"
+    )
+    assert (
+        registry.agent_url(defn, "tool_calling", "team1")
+        == "http://exgentic-a2a-tool-calling-gsm8k.team1.svc.cluster.local:8080"
+    )
+
+
+def test_workload_urls_templated_cross_cluster():
+    defn = registry.BENCHMARKS["gsm8k"]
+    tmpl = "https://{service}.{namespace}.apps.ykt2.hcp.res.ibm.com"
+    assert (
+        registry.mcp_url(defn, "team1", tmpl)
+        == "https://exgentic-mcp-gsm8k-mcp.team1.apps.ykt2.hcp.res.ibm.com/mcp"
+    )
+    assert (
+        registry.agent_url(defn, "tool_calling", "team1", template=tmpl)
+        == "https://exgentic-a2a-tool-calling-gsm8k.team1.apps.ykt2.hcp.res.ibm.com"
+    )
+
+
+def test_agent_injected_mcp_url_stays_in_cluster():
+    # Agent->tool is co-located in the target cluster; it must never be templated.
+    defn = registry.BENCHMARKS["gsm8k"]
+    agent = registry.build_agent_request(defn, "tool_calling", "team1", None, "default")
+    mcp = next(e.value for e in agent.env_vars if e.name == "MCP_URL")
+    assert mcp == "http://exgentic-mcp-gsm8k-mcp.team1.svc.cluster.local:8000/mcp"
+
+
 # --- route tests ---
 
 

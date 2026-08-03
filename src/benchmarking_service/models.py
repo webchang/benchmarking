@@ -41,6 +41,15 @@ class InstanceConfig(BaseModel):
     `keycloak_backchannel_url`, when present, is dialed for JWKS + ROPC instead
     of composing URLs from `iss` (required in-cluster on kind, where the iss host
     is unreachable). When absent, URLs are composed from `iss`.
+
+    `mcp_endpoint_template`/`agent_endpoint_template` are the URLs the *Service*
+    dials to reach the workload MCP tool and A2A agent. When unset the Service
+    composes the co-located in-cluster `*.svc.cluster.local` address; set them
+    (with `{service}`/`{namespace}` placeholders, e.g.
+    `https://{service}.{namespace}.apps.ykt2.hcp.res.ibm.com`) when the workloads
+    live on a different cluster reachable only via external routes. Only the
+    Service->workload dial is affected; the intra-cluster agent->tool `MCP_URL`
+    injected into the agent pod always stays `svc.cluster.local`.
     """
 
     iss: str
@@ -49,6 +58,8 @@ class InstanceConfig(BaseModel):
     service_credential: ServiceCredential
     mlflow: MLflowConfig = Field(default_factory=MLflowConfig)
     s3: S3Config = Field(default_factory=S3Config)
+    mcp_endpoint_template: str | None = None
+    agent_endpoint_template: str | None = None
 
 
 class ConfigUpdateRequest(BaseModel):

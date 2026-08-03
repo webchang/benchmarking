@@ -377,6 +377,36 @@ does *not* solve — those names also resolve to loopback in-cluster and would n
 DNS or a header-injecting call through the gateway svc. Only relevant if a benchmark must hit agent
 endpoints directly from the Service.)
 
+#### Decision: per-instance workload endpoints (cross-cluster runs)
+
+By design the Service can run a benchmark whose workloads live on a **different cluster** than the
+Service pod. This needed almost nothing new: an instance *already* points its backend
+(`rossoctl_base_url`) and auth (`keycloak_backchannel_url`) at per-instance URLs, so those can name a
+remote cluster's external routes today. The **only** hardcoded, non-per-instance piece was the
+workload endpoints the Service dials — `registry.mcp_url`/`agent_url`, which composed
+`*.svc.cluster.local` and therefore only resolved inside the Service's own cluster.
+
+**Decision: add optional per-instance `mcp_endpoint_template` / `agent_endpoint_template`** (URL
+templates with `{service}`/`{namespace}` placeholders, e.g.
+`https://{service}.{namespace}.apps.ykt2.hcp.res.ibm.com`). When set, the Service dials those
+external-route URLs (MCP appends the benchmark's `mcp_path`); when unset it composes the co-located
+`svc.cluster.local` address exactly as before — so co-located (kind / same-cluster) instances are
+unchanged. The operator encodes whatever host pattern their routes use, so the Service never guesses
+route naming (cluster-agnostic). Per-instance (not per-run) because the route pattern is a stable
+property of the target cluster, not of each request.
+
+**Only the Service→workload dial is templated.** The `MCP_URL` env injected into the **agent pod**
+(`build_agent_request`) is the *agent→tool* hop; the agent and tool are always co-located in the
+target cluster, so that stays `svc.cluster.local` even for a cross-cluster run.
+
+**Residual (infra, not code).** A live cross-cluster run also depends on: the target cluster
+exposing the MCP tool + agent via external Routes; network egress to them and to the target backend
+route; and the backend **trusting a token the Service can mint** — kagenti-backend trusts only its
+*internal* issuer, and a token minted against the target's *public* keycloak route is rejected, so
+the Service must reach the target's internal keycloak (or the backend's trust must be widened). Until
+that is provisioned, a cross-cluster run surfaces as an upstream-login/precheck failure, not a
+silent hang.
+
 **Single co-located instance; config via Secret/ConfigMap.** In kind there is exactly one
 in-scope Rossoctl (the cluster the Service runs in), so the `iss`-keyed instance map has a single
 entry. The per-instance config is delivered as a **mounted Secret/ConfigMap** rather than a host

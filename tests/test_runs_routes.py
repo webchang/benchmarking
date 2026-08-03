@@ -106,6 +106,37 @@ def test_start_run_returns_202_and_completes(client, make_token, jwks_doc, monke
 
 
 @respx.mock
+def test_start_run_dials_templated_endpoints(tmp_path, make_token, jwks_doc, monkeypatch, instance_dict):
+    # An instance whose workloads live on another cluster: the Service must dial the
+    # external-route URLs from the templates, not the co-located cluster.local address.
+    instance_dict["mcp_endpoint_template"] = "https://{service}.{namespace}.apps.ykt2.example.com"
+    instance_dict["agent_endpoint_template"] = "https://{service}.{namespace}.apps.ykt2.example.com"
+    (tmp_path / "kc.json").write_text(json.dumps(instance_dict))
+    monkeypatch.setattr(settings, "instances_dir", str(tmp_path))
+
+    _mock_auth(jwks_doc)
+    _mock_ready(True)
+
+    captured: dict = {}
+
+    def _capture(mcp_url, agent_url, token, timeout):
+        captured["mcp_url"] = mcp_url
+        captured["agent_url"] = agent_url
+        return (_FakeMcp(), _FakeA2A())
+
+    monkeypatch.setattr(runs_module, "_build_clients", _capture)
+
+    with TestClient(create_app()) as c:
+        headers = _auth(make_token)
+        r = c.post("/benchmarks/gsm8k/runs", headers=headers, json={"max_tasks": 1})
+        assert r.status_code == 202, r.text
+        _poll(c, headers, r.json()["run_id"])
+
+    assert captured["mcp_url"] == "https://exgentic-mcp-gsm8k-mcp.team1.apps.ykt2.example.com/mcp"
+    assert captured["agent_url"] == "https://exgentic-a2a-tool-calling-gsm8k.team1.apps.ykt2.example.com"
+
+
+@respx.mock
 def test_start_run_unknown_benchmark_404(client, make_token, jwks_doc, monkeypatch):
     _mock_auth(jwks_doc)
     _install_fakes(monkeypatch)

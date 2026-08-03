@@ -62,13 +62,29 @@ def agent_name(benchmark: str, agent: str, experiment: str = "default") -> str:
     return base
 
 
-def mcp_url(defn: "BenchmarkDefinition", namespace: str) -> str:
+def mcp_url(defn: "BenchmarkDefinition", namespace: str, template: str | None = None) -> str:
+    """URL the *Service* dials to reach the MCP tool.
+
+    With `template` (per-instance, `{service}`/`{namespace}` placeholders) the tool lives on
+    another cluster reachable via an external route; otherwise it is co-located in-cluster.
+    """
     service = f"{tool_name(defn.name)}{defn.mcp_service_suffix}"
+    if template:
+        return template.format(service=service, namespace=namespace).rstrip("/") + defn.mcp_path
     return f"http://{service}.{namespace}.svc.cluster.local:{defn.mcp_port}{defn.mcp_path}"
 
 
-def agent_url(defn: "BenchmarkDefinition", agent: str, namespace: str, experiment: str = "default") -> str:
+def agent_url(
+    defn: "BenchmarkDefinition",
+    agent: str,
+    namespace: str,
+    experiment: str = "default",
+    template: str | None = None,
+) -> str:
+    """URL the *Service* dials to reach the A2A agent (see `mcp_url` for the template semantics)."""
     service = agent_name(defn.name, agent, experiment)
+    if template:
+        return template.format(service=service, namespace=namespace).rstrip("/")
     return f"http://{service}.{namespace}.svc.cluster.local:8080"
 
 
@@ -112,6 +128,8 @@ def build_agent_request(
     spec = defn.agents[agent]
     resolved_model = model or defn.default_model
     injected = [
+        # Agent->tool is always intra-cluster (agent and tool are co-located in the target
+        # cluster), so this stays svc.cluster.local even for a cross-cluster run — no template.
         EnvVar(name="MCP_URL", value=mcp_url(defn, namespace)),
         EnvVar(name="LLM_MODEL", value=resolved_model),
         EnvVar(name="EXGENTIC_SET_AGENT_MODEL", value=resolved_model),

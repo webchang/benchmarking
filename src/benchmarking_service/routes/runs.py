@@ -145,8 +145,10 @@ async def start_run(
 
     runs = request.app.state.runs
     run = runs.create(benchmark=name, req=req, iss=ctx.instance.iss)
-    mcp_url = reg.mcp_url(defn, req.namespace)
-    agent_url = reg.agent_url(defn, req.agent, req.namespace, req.experiment)
+    mcp_url = reg.mcp_url(defn, req.namespace, ctx.instance.mcp_endpoint_template)
+    agent_url = reg.agent_url(
+        defn, req.agent, req.namespace, req.experiment, ctx.instance.agent_endpoint_template
+    )
     task = asyncio.create_task(_execute(run, mcp_url, agent_url, token, req))
     runs.attach_task(run.run_id, task)
     return {"run_id": run.run_id, "status": run.status.value}
