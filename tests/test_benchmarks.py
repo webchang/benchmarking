@@ -59,7 +59,7 @@ def test_registry_builders_gsm8k():
     assert agent.name == "exgentic-a2a-tool-calling-gsm8k"
     a_env = {e.name: e.value for e in agent.env_vars if e.value is not None}
     assert a_env["MCP_URL"] == "http://exgentic-mcp-gsm8k-mcp.team1.svc.cluster.local:8000/mcp"
-    assert a_env["LLM_MODEL"] == "openai/Azure/gpt-4.1"
+    assert a_env["LLM_MODEL"] == "openai/Qwen3.6-35B-A3B"
     assert a_env["EXGENTIC_SET_AGENT_ENABLE_TOOL_SHORTLISTING"] == "true"
 
 
@@ -121,7 +121,7 @@ def test_deploy_gsm8k_issues_tool_then_agent(client, make_token, jwks_doc):
     assert agent_body["containerImage"] == "ghcr.io/exgentic/exgentic-a2a-tool_calling:latest"
     agent_env = {e["name"]: e.get("value") for e in agent_body["envVars"]}
     assert agent_env["MCP_URL"] == "http://exgentic-mcp-gsm8k-mcp.team1.svc.cluster.local:8000/mcp"
-    assert agent_env["LLM_MODEL"] == "openai/Azure/gpt-4.1"
+    assert agent_env["LLM_MODEL"] == "openai/Qwen3.6-35B-A3B"
     assert agent_env["EXGENTIC_SET_AGENT_ENABLE_TOOL_SHORTLISTING"] == "true"
 
 

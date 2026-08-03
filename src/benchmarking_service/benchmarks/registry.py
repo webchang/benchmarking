@@ -20,6 +20,9 @@ from ..models import (
 )
 
 
+_LITELLM_BASE_URL = "https://litellm-litemaas.apps.prod.rhoai.rh-aiservices-bu.com/v1"
+
+
 def _secret_env(name: str, secret: str, key: str) -> EnvVar:
     return EnvVar(name=name, value_from=EnvVarSource(secret_key_ref=SecretKeyRef(name=secret, key=key)))
 
@@ -44,7 +47,7 @@ class BenchmarkDefinition(BaseModel):
     mcp_service_suffix: str = "-mcp"
     tool_env: list[EnvVar] = Field(default_factory=list)
     tool_resources: AgentResources | None = None
-    default_model: str = "openai/Azure/gpt-4.1"
+    default_model: str = "openai/Qwen3.6-35B-A3B"
     agents: dict[str, BenchmarkAgentSpec] = Field(default_factory=dict)
 
 
@@ -140,6 +143,7 @@ BENCHMARKS: dict[str, BenchmarkDefinition] = {
         tool_env=[
             EnvVar(name="BENCHMARK_NAME", value="gsm8k"),
             _secret_env("HF_TOKEN", "hf-secret", "hf-token"),
+            EnvVar(name="OPENAI_API_BASE", value=_LITELLM_BASE_URL),
             # deploy-benchmark.sh appends this for gsm8k specifically.
             EnvVar(name="EXGENTIC_SET_BENCHMARK_RUNNER", value="direct"),
         ],
@@ -149,7 +153,8 @@ BENCHMARKS: dict[str, BenchmarkDefinition] = {
                 container_image="ghcr.io/exgentic/exgentic-a2a-tool_calling:latest",
                 extra_env=[
                     _secret_env("OPENAI_API_KEY", "openai-secret", "apikey"),
-                    EnvVar(name="OPENAI_API_BASE", value="https://api.openai.com/v1"),
+                    EnvVar(name="OPENAI_API_BASE", value=_LITELLM_BASE_URL),
+                    EnvVar(name="LLM_API_BASE", value=_LITELLM_BASE_URL),
                     EnvVar(name="EXGENTIC_SET_AGENT_ENABLE_TOOL_SHORTLISTING", value="true"),
                     EnvVar(name="EXGENTIC_DEFAULT_RUNNER", value="thread"),
                     EnvVar(name="LITELLM_LOCAL_MODEL_COST_MAP", value="True"),
