@@ -1,0 +1,152 @@
+import asyncio
+
+import pytest
+
+from benchmarking_service.models import RunRequest, RunState, RunStatus
+from benchmarking_service.runner import engine
+from benchmarking_service.runner.prompt import build_prompt
+from benchmarking_service.runner.registry import RunRegistry
+
+
+def _run_state() -> RunState:
+    return RunState(
+        run_id="r1",
+        benchmark="gsm8k",
+        agent="tool_calling",
+        namespace="team1",
+        experiment="default",
+    )
+
+
+class FakeMcp:
+    def __init__(self, tasks, *, eval_map=None):
+        self._tasks = tasks
+        self._eval_map = eval_map or {}
+        self.created: list[str] = []
+        self.deleted: list[str] = []
+
+    async def list_tasks(self):
+        return list(self._tasks)
+
+    async def create_session(self, task_id):
+        self.created.append(task_id)
+        return f"sess-{task_id}", f"solve {task_id}", {"hint": task_id}
+
+    async def evaluate_session(self, session_id):
+        return self._eval_map.get(session_id, True)
+
+    async def delete_session(self, session_id):
+        self.deleted.append(session_id)
+
+
+class FakeA2A:
+    def __init__(self, *, raise_on=None, delay=0.0):
+        self._raise_on = set(raise_on or ())
+        self._delay = delay
+        self.prompts: list[tuple[str, str]] = []
+        self.max_concurrent = 0
+        self._active = 0
+
+    async def send_prompt(self, prompt, session_id=None):
+        self._active += 1
+        self.max_concurrent = max(self.max_concurrent, self._active)
+        try:
+            if self._delay:
+                await asyncio.sleep(self._delay)
+            if session_id in self._raise_on:
+                raise RuntimeError("agent boom")
+            self.prompts.append((prompt, session_id))
+            return "answer"
+        finally:
+            self._active -= 1
+
+
+# --- prompt ---
+
+
+def test_build_prompt_format():
+    p = build_prompt("2+2?", "sess-x", {"a": 1, "b": 2})
+    assert p == "The task you are to complete is:\n2+2?\n\nContext:\n- a: 1\n- b: 2"
+
+
+def test_build_prompt_no_context():
+    assert build_prompt("q", "sess") == "The task you are to complete is:\nq"
+
+
+# --- engine ---
+
+
+async def test_run_benchmark_happy_path():
+    mcp = FakeMcp(["t1", "t2", "t3"])
+    a2a = FakeA2A()
+    run = await engine.run_benchmark(_run_state(), mcp, a2a, max_tasks=None, max_parallel=2)
+
+    assert run.status is RunStatus.succeeded
+    assert run.summary.total == 3
+    assert run.summary.succeeded == 3
+    assert run.summary.evaluated_pass == 3
+    assert run.summary.pass_rate == 1.0
+    assert sorted(mcp.deleted) == ["sess-t1", "sess-t2", "sess-t3"]
+    assert run.finished_at is not None
+
+
+async def test_run_benchmark_failed_evaluation_counts():
+    mcp = FakeMcp(["t1", "t2"], eval_map={"sess-t2": False})
+    run = await engine.run_benchmark(_run_state(), mcp, FakeA2A(), max_parallel=1)
+
+    assert run.status is RunStatus.succeeded  # the run completed
+    assert run.summary.succeeded == 2  # both ran without error
+    assert run.summary.evaluated_pass == 1
+    assert run.summary.pass_rate == 0.5
+
+
+async def test_run_benchmark_agent_error_is_captured_not_fatal():
+    mcp = FakeMcp(["t1", "t2"])
+    a2a = FakeA2A(raise_on={"sess-t1"})
+    run = await engine.run_benchmark(_run_state(), mcp, a2a, max_parallel=1)
+
+    assert run.status is RunStatus.succeeded
+    by_task = {r.task_id: r for r in run.results}
+    assert by_task["t1"].error == "agent boom"
+    assert by_task["t1"].passed is False
+    assert by_task["t2"].error is None
+    assert run.summary.succeeded == 1
+    # delete_session runs in finally even for the failed task
+    assert sorted(mcp.deleted) == ["sess-t1", "sess-t2"]
+
+
+async def test_run_benchmark_max_tasks_slices():
+    mcp = FakeMcp(["t0", "t1", "t2", "t3", "t4"])
+    run = await engine.run_benchmark(_run_state(), mcp, FakeA2A(), max_tasks=2, max_parallel=2)
+    assert run.summary.total == 2
+    assert sorted(mcp.created) == ["t0", "t1"]
+
+
+async def test_run_benchmark_respects_max_parallel():
+    mcp = FakeMcp([f"t{i}" for i in range(6)])
+    a2a = FakeA2A(delay=0.05)
+    await engine.run_benchmark(_run_state(), mcp, a2a, max_parallel=2)
+    assert a2a.max_concurrent <= 2
+    assert a2a.max_concurrent >= 2  # actually overlapped
+
+
+async def test_run_benchmark_serial_when_parallel_one():
+    mcp = FakeMcp([f"t{i}" for i in range(4)])
+    a2a = FakeA2A(delay=0.02)
+    await engine.run_benchmark(_run_state(), mcp, a2a, max_parallel=1)
+    assert a2a.max_concurrent == 1
+
+
+# --- registry / tenant scoping ---
+
+
+def test_run_registry_tenant_isolation():
+    reg = RunRegistry()
+    req = RunRequest()
+    run = reg.create(benchmark="gsm8k", req=req, iss="iss-A")
+
+    assert reg.get(run.run_id, "iss-A") is run
+    assert reg.get(run.run_id, "iss-B") is None
+    assert reg.list(benchmark="gsm8k", iss="iss-A") == [run]
+    assert reg.list(benchmark="gsm8k", iss="iss-B") == []
+    assert reg.list(benchmark="other", iss="iss-A") == []

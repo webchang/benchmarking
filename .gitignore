@@ -65,6 +65,9 @@ db.sqlite3-journal
 instance/
 .webassets-cache
 
+# Per-tenant instance config (contains ROPC service credentials)
+instances/
+
 # Scrapy stuff:
 .scrapy
 

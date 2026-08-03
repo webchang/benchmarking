@@ -1,0 +1,69 @@
+# Base Deployment for the Benchmarking Service. Works on kind / generic Kubernetes
+# with a pinned non-root UID (10001), and remains OpenShift-compatible: the image
+# is arbitrary-UID-safe (GID 0, group-writable), so if OpenShift's restricted-v2
+# SCC injects its own UID it still runs. For the OpenShift variant that lets the
+# SCC assign the UID, apply deploy/openshift/deployment-patch.yaml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: benchmarking-service
+  namespace: rossoctl-system
+  labels:
+    app: benchmarking-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: benchmarking-service
+  template:
+    metadata:
+      labels:
+        app: benchmarking-service
+    spec:
+      # Pod-level: pinned non-root UID for kind/generic k8s. On OpenShift you may
+      # drop runAsUser/fsGroup and let the SCC inject them (image supports both).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 0
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: benchmarking-service
+          image: ghcr.io/webchang/benchmarker:v1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: SERVICE_INSTANCES_DIR
+              value: /etc/service/instances
+            - name: SERVICE_PORT
+              value: "8080"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: instances
+              mountPath: /etc/service/instances
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+      volumes:
+        # Per-instance config bundle produced by kind-service-bootstrap.sh.
+        - name: instances
+          secret:
+            secretName: benchmarking-instances

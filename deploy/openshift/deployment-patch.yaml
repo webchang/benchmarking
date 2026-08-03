@@ -1,0 +1,25 @@
+# OpenShift variant. Strategic-merge patch over deploy/deployment.yaml:
+#   kubectl patch deploy benchmarking-service -n rossoctl-system \
+#     --patch-file deploy/openshift/deployment-patch.yaml
+#
+# On OpenShift the restricted-v2 SCC injects a random non-root UID from the
+# project's allocated range and sets fsGroup itself. Pinning runAsUser: 10001 can
+# be REJECTED if 10001 falls outside that range (unless the ServiceAccount is
+# granted the nonroot-v2 SCC). So here we drop the pinned UID/GID and let the SCC
+# assign them; the image is arbitrary-UID-safe, so it runs regardless. runAsNonRoot
+# and the hardening flags are kept.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: benchmarking-service
+  namespace: rossoctl-system
+spec:
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: null
+        runAsGroup: null
+        fsGroup: null
+        seccompProfile:
+          type: RuntimeDefault
