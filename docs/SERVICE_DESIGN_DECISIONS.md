@@ -225,6 +225,32 @@ same LiteLLM base and `openai-secret/apikey` gsm8k's agent uses, and carries
 tau*). Note: multi-turn sessions can exceed the default 300s `RunRequest.timeout_seconds`; pass a
 larger value for tau2 runs.
 
+#### Comparing runs across clusters (e.g. kind vs a remote workload cluster)
+
+When the same benchmark is run on two matrices, the artifact *set and schema are identical*
+(`run.json` + `report.ndjson` + `report.parquet`), because S3 export lives in the Service and is
+cluster-agnostic. Per-run **content** still differs run-to-run, and a per-task pass/fail can flip
+between clusters — but that is usually **not** a cluster/wiring/model difference. Both the agent
+model and the tau2 user-simulator resolve to the *same* `default_model` (`openai/Qwen3.6-35B-A3B`)
+against the *same shared external LiteLLM base* (`_LITELLM_BASE_URL` in `registry.py`, not a
+per-cluster in-cluster LLM). So identical inputs hit an identical model regardless of cluster; the
+divergence is **stochastic** — sampling nondeterminism across the multi-turn agent + simulator
+generations (plus provider-side batching), which flips borderline tasks. Observed concretely: a tau2
+`max_tasks=2` run scored 1.0 on kind but 0.5 on a remote cluster, and two runs on the *same* remote
+cluster disagreed with each other (one task-0 failure was an infra flake, the next a clean-but-failed
+evaluation). Implications for comparative evaluation:
+
+- Do **not** attribute a single-run pass/fail delta to the cluster or to wiring — on `n=2` tasks,
+  1.0-vs-0.5 is small-sample noise on one model.
+- To make outcomes comparable, reduce variance rather than change Service config: pin deterministic
+  decoding (temperature 0 / fixed seed) on *both* the agent and the simulator **if the exgentic
+  images expose those knobs** (the Service only passes `model`), and judge on larger `max_tasks` /
+  repeated runs so pass_rate distributions converge. Full determinism is still not guaranteed
+  (server-side batching; the simulator is itself an LLM).
+- tau2 report records show `model: unknown` and `llm_*: 0`: the multi-turn loop + simulator run
+  server-side in the MCP pod, so the Agent-side traces the report is built from don't capture the
+  model name or token counts. This is expected and identical on every cluster.
+
 ### Workload-provided credentials vs Service-enacted config
 
 A benchmark has its own configuration/credential requirements, and they fall into **two disjoint
