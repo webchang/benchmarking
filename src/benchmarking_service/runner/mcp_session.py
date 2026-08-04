@@ -21,6 +21,19 @@ _BENIGN_DELETE_MARKERS = (
     "no longer alive",
 )
 
+# Upper bound on tearing down a half-open transport whose background reader/writer
+# tasks may be blocked on a stuck socket — keeps a failed connect from re-wedging.
+_CLEANUP_TIMEOUT = 10.0
+
+
+class McpConnectError(RuntimeError):
+    """MCP connect/initialize handshake failed or timed out.
+
+    Raised out of `__aenter__` so a run whose MCP tool never answered the
+    handshake (e.g. the pod is still warming and the gateway returns 502) fails
+    promptly instead of hanging on the SDK's untimed `initialize()` read.
+    """
+
 
 class McpEvalSession:
     def __init__(self, url: str, token: str | None = None, connect_timeout: float = 30.0):
@@ -32,6 +45,28 @@ class McpEvalSession:
         self._lock = asyncio.Lock()
 
     async def __aenter__(self) -> "McpEvalSession":
+        # The whole connect (transport open + session open + initialize) is bounded by
+        # one deadline. The SDK's per-request `timeout` does NOT cover this: a fast 502
+        # returns before any request timeout, then `initialize()` blocks forever on the
+        # read stream because the erroring POST lives in a background task-group child.
+        # asyncio.timeout cancels in *this* task, so the teardown below exits the SDK's
+        # anyio cancel scopes in the same task that entered them (avoiding the
+        # "exit cancel scope in a different task" error).
+        try:
+            async with asyncio.timeout(self._connect_timeout):
+                await self._connect()
+        except TimeoutError as exc:
+            await self._teardown()
+            raise McpConnectError(
+                f"MCP connect to {self._url} timed out after {self._connect_timeout:g}s "
+                "(tool pod still warming or unreachable?)"
+            ) from exc
+        except BaseException:
+            await self._teardown()
+            raise
+        return self
+
+    async def _connect(self) -> None:
         from mcp import ClientSession
 
         try:
@@ -39,8 +74,6 @@ class McpEvalSession:
         except ImportError:  # older SDK spelling
             from mcp.client.streamable_http import streamable_http_client as _http_client
 
-        # Bound the HTTP ops so connecting to an endpoint-less Service (e.g. the MCP
-        # pod never became Ready) fails fast instead of wedging the whole run.
         kwargs: dict = {"timeout": timedelta(seconds=self._connect_timeout)}
         if self._headers:
             kwargs["headers"] = self._headers
@@ -53,18 +86,25 @@ class McpEvalSession:
         self._session = ClientSession(read, write)
         await self._session.__aenter__()
         await self._session.initialize()
-        return self
 
     async def __aexit__(self, *exc) -> None:
+        await self._teardown(exc or (None, None, None))
+
+    async def _teardown(self, exc: tuple = (None, None, None)) -> None:
+        # Each close is bounded: a transport whose reader task is stuck on a dead socket
+        # must not turn cleanup into a fresh hang. Same task as the connect, so anyio
+        # cancel scopes unwind cleanly; any residual error is swallowed as best-effort.
         if self._session is not None:
             try:
-                await self._session.__aexit__(*exc)
+                async with asyncio.timeout(_CLEANUP_TIMEOUT):
+                    await self._session.__aexit__(*exc)
             except Exception as e:  # noqa: BLE001 - cleanup is best-effort
                 logger.warning("error closing MCP session: %s", e)
             self._session = None
         if self._http_ctx is not None:
             try:
-                await self._http_ctx.__aexit__(*exc)
+                async with asyncio.timeout(_CLEANUP_TIMEOUT):
+                    await self._http_ctx.__aexit__(*exc)
             except Exception as e:  # noqa: BLE001 - cleanup is best-effort
                 logger.warning("error closing MCP transport: %s", e)
             self._http_ctx = None
