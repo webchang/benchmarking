@@ -5,7 +5,7 @@ import time
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from .. import mlflow_report
+from .. import mlflow_report, s3_export
 from ..auth import ropc
 from ..auth.mlflow import MLflowAuthError, mlflow_token
 from ..auth.ropc import ROPCLoginError
@@ -43,6 +43,7 @@ async def _execute(
     tracer=None,
     flush=None,
     meta: dict | None = None,
+    on_complete=None,
 ) -> None:
     run.status = RunStatus.running
     run.started_at = time.time()
@@ -79,6 +80,12 @@ async def _execute(
         run.error = str(exc)
         run.finished_at = time.time()
         logger.exception("benchmark run %s failed", run.run_id)
+    finally:
+        if on_complete is not None:
+            try:
+                await on_complete(run)
+            except Exception:  # noqa: BLE001 - export must never fail or unwind the run
+                logger.exception("benchmark run %s: S3 export failed", run.run_id)
 
 
 def _definition(name: str):
@@ -175,11 +182,68 @@ async def start_run(
     }
     tracer, flush = await _build_run_tracer(request, ctx, run.run_id)
 
+    async def on_complete(finished: RunState) -> None:
+        await _maybe_export_run(request, ctx, finished)
+
     task = asyncio.create_task(
-        _execute(run, mcp_url, agent_url, token, req, tracer, flush, meta)
+        _execute(run, mcp_url, agent_url, token, req, tracer, flush, meta, on_complete)
     )
     runs.attach_task(run.run_id, task)
     return {"run_id": run.run_id, "status": run.status.value}
+
+
+async def _maybe_export_run(request: Request, ctx: RequestContext, run: RunState) -> None:
+    """Export the completed run's records (NDJSON+Parquet) + summary to S3, if configured.
+
+    No-op when the instance has no S3 bucket set. Fail-soft: any error is swallowed by the
+    caller so export never affects the run outcome — it just leaves `run.artifacts` empty.
+    """
+    eff = request.app.state.config_overrides.effective(ctx.instance.iss, ctx.instance)
+    if not eff.s3.bucket:
+        return
+    username = ctx.preferred_username or "unknown"
+    records = await _collect_records_soft(request, ctx, run)
+    artifacts = await s3_export.export_run(
+        eff.s3,
+        preferred_username=username,
+        source_iss=ctx.instance.iss,
+        benchmark=run.benchmark,
+        run_id=run.run_id,
+        records=records,
+        run_summary=run.model_dump(mode="json", exclude={"artifacts", "artifacts_prefix"}),
+    )
+    run.artifacts = artifacts
+    run.artifacts_prefix = s3_export.run_prefix(
+        eff.s3, username, ctx.instance.iss, run.benchmark, run.run_id
+    )
+
+
+async def _collect_records_soft(request: Request, ctx: RequestContext, run: RunState) -> list:
+    """Fetch this run's MLflow records for export, returning [] on any issue (never raises).
+
+    Mirrors the report path but tolerant: no MLflow config, auth/transport failure, or empty
+    traces all yield [] so the run summary + (empty) NDJSON still export.
+    """
+    cfg = request.app.state.config_overrides.effective(ctx.instance.iss, ctx.instance).mlflow
+    if not cfg.tracking_url:
+        return []
+    since_ms = int(run.started_at * 1000) - 60_000 if run.started_at else None
+    try:
+        if cfg.insecure_tls:
+            async with httpx.AsyncClient(
+                timeout=settings.http_timeout_seconds, verify=False
+            ) as client:
+                token = await mlflow_token(cfg, client)
+                traces = await mlflow_report.download_traces(client, cfg, token, since_ms=since_ms)
+        else:
+            client = request.app.state.http
+            token = await mlflow_token(cfg, client)
+            traces = await mlflow_report.download_traces(client, cfg, token, since_ms=since_ms)
+    except (MLflowAuthError, httpx.HTTPError) as exc:
+        logger.warning("run %s: MLflow read for export failed (%s)", run.run_id, exc)
+        return []
+    records = mlflow_report.parse_traces(traces)
+    return mlflow_report.filter_by_sessions(records, [r.session_id for r in run.results])
 
 
 async def _build_run_tracer(request: Request, ctx: RequestContext, run_id: str):
@@ -290,6 +354,7 @@ async def get_run_report(
         experiment=run.experiment,
         trace_count=len(records),
         records=records,
+        artifacts=run.artifacts,
     )
 
 

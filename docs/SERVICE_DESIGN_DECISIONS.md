@@ -315,6 +315,31 @@ manages the Service's own MLflow/S3.
   HTTP). `oauth_url` defaults to `oauth-openshift.<apps-domain>` derived from `tracking_url`'s
   ingress wildcard (the fixed OpenShift convention), or can be set explicitly.
 
+**Exporting a completed run's data to S3 (cross-service analytics sink, `s3_export.py`).** MLflow is
+per-Service (each Service reads/writes only its own co-located MLflow), so it can't answer questions
+*across* Services. S3 is the shared aggregation layer: on run completion the Service uploads the same
+`MLflowTraceRecord`s the report API returns, so cross-service data lands in one bucket under a
+hierarchical key that groups naturally —
+`<prefix>/<preferred_username>/<source_iss>/<benchmark>/<run_id>/{run.json,report.ndjson,report.parquet}`.
+The requester's `preferred_username` is the top level (a person's runs group across every Service
+they use); `<source_iss>` (the Service benchmarker's `iss`, scheme-stripped and sanitized)
+distinguishes each Service; then benchmark name and the Service-generated `run_id`. Each run writes
+`run.json` (the run summary), `report.ndjson` (one record per line, streaming-friendly), and — only
+when there are records, since Parquet needs a schema inferred from the rows — `report.parquet`
+(analytics-friendly). Objects go up **public-read by default** (`S3Config.public_read`, read-only to
+everyone else, owner-only writes); if the bucket has ACLs disabled the put is retried without one.
+
+This is **opt-in** (a no-op unless the instance's `S3Config.bucket` is set) and **fail-soft**: the
+export runs in `_execute`'s `finally` after the run reaches a terminal status, and any failure
+(missing MLflow creds → empty records, S3 transport error) is logged and leaves `run.artifacts`
+empty — it never changes the run outcome. boto3 and pyarrow are synchronous, so all S3/Parquet work
+runs on a worker thread via `asyncio.to_thread`. The resulting object references (`RunArtifact`:
+name/format/key/url/size_bytes) are surfaced on both `GET /runs/{run_id}` (`RunState.artifacts` +
+`artifacts_prefix`) and the run report, so a client can selectively fetch just the format it needs
+instead of pulling the whole payload. **Timing note:** because export happens just *after* the run
+flips to `succeeded`/`failed`, `artifacts` populates a moment later than the terminal status — a
+client polling for artifacts should keep polling briefly past the terminal transition.
+
 ### Dev/test users: ROPC + seeded credentials (Device Flow is unnecessary here)
 
 For a **dev/test environment**, all non-interactive users (not just `benchmarker`) are

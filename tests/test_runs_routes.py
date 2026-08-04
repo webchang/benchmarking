@@ -286,6 +286,55 @@ def test_run_report_filters_to_run_sessions(tmp_path, make_token, jwks_doc, monk
         assert body["records"][0]["total_latency_s"] == 1.7
 
 
+class _FakeS3Client:
+    def __init__(self):
+        self.puts = []
+
+    def put_object(self, **kwargs):
+        self.puts.append(kwargs)
+
+
+@respx.mock
+def test_run_exports_artifacts_to_s3_on_completion(tmp_path, make_token, jwks_doc, monkeypatch, instance_dict):
+    # With S3 configured, a completed run auto-exports its files and surfaces the refs.
+    instance_dict["s3"] = {"bucket": "bench-bkt", "prefix": "runs"}
+    (tmp_path / "kc.json").write_text(json.dumps(instance_dict))
+    monkeypatch.setattr(settings, "instances_dir", str(tmp_path))
+
+    _mock_auth(jwks_doc)
+    _mock_ready(True)
+    _install_fakes(monkeypatch)
+
+    from benchmarking_service import s3_export
+
+    fake = _FakeS3Client()
+    monkeypatch.setattr(s3_export, "_make_client", lambda cfg: fake)
+
+    with TestClient(create_app()) as c:
+        headers = _auth(make_token)
+        r = c.post("/benchmarks/gsm8k/runs", headers=headers, json={"max_tasks": 1})
+        assert r.status_code == 202, r.text
+        run_id = r.json()["run_id"]
+        data = _poll(c, headers, run_id)
+        assert data["status"] == "succeeded"
+        # Export runs in the completion finally (on a worker thread), so artifacts populate
+        # just after the run reaches a terminal status — poll briefly for them.
+        deadline = time.time() + 5.0
+        while not data["artifacts"] and time.time() < deadline:
+            time.sleep(0.05)
+            data = c.get(f"/benchmarks/gsm8k/runs/{run_id}", headers=headers).json()
+
+    # The instance's MLflow has no client creds, so the export read yields no records ->
+    # run.json + report.ndjson (no parquet without a schema).
+    names = {a["name"] for a in data["artifacts"]}
+    assert names == {"run.json", "report.ndjson"}
+    assert data["artifacts_prefix"].startswith("runs/alice/")
+    assert data["artifacts_prefix"].endswith(f"/gsm8k/{run_id}")
+    for put in fake.puts:
+        assert put["Bucket"] == "bench-bkt"
+        assert put["Key"].startswith(data["artifacts_prefix"] + "/")
+
+
 @respx.mock
 def test_run_report_409_when_mlflow_unconfigured(tmp_path, make_token, jwks_doc, monkeypatch, instance_dict):
     instance_dict.pop("mlflow", None)  # no tracking_url -> report unavailable

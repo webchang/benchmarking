@@ -66,6 +66,10 @@ class S3Config(BaseModel):
     access_key_id: str | None = None
     secret_access_key: str | None = None
     prefix: str | None = None
+    # Upload objects with a public-read ACL so the bucket's benchmarking data is readable by
+    # all (write stays owner-only). Best-effort: if the bucket rejects ACLs the put is retried
+    # without one. Flip to false to keep objects private.
+    public_read: bool = True
 
 
 class InstanceConfig(BaseModel):
@@ -350,6 +354,20 @@ class RunSummary(BaseModel):
     wall_seconds: float
 
 
+class RunArtifact(BaseModel):
+    """A single S3 object exported for a completed run.
+
+    Surfaced in the run/report payload so a client can selectively fetch only the file(s) it
+    needs (e.g. Parquet for analytics, NDJSON for streaming) instead of the full inline records.
+    """
+
+    name: str  # filename, e.g. report.parquet
+    format: str  # ndjson | parquet | json
+    key: str  # full S3 object key
+    url: str  # best-effort object URL (public when public_read)
+    size_bytes: int
+
+
 class RunState(BaseModel):
     run_id: str
     benchmark: str
@@ -362,6 +380,9 @@ class RunState(BaseModel):
     summary: RunSummary | None = None
     results: list[TaskResult] = Field(default_factory=list)
     error: str | None = None
+    # Populated after completion when S3 export is configured (bucket set).
+    artifacts_prefix: str | None = None
+    artifacts: list[RunArtifact] = Field(default_factory=list)
 
 
 class MLflowTraceRecord(BaseModel):
@@ -421,6 +442,7 @@ class RunReportResponse(BaseModel):
     experiment: str
     trace_count: int
     records: list[MLflowTraceRecord] = Field(default_factory=list)
+    artifacts: list[RunArtifact] = Field(default_factory=list)
 
 
 class ReportAggregate(BaseModel):
