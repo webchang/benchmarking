@@ -31,7 +31,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: benchmarking-service
-          image: ghcr.io/webchang/benchmarker:v1.5
+          image: ghcr.io/webchang/benchmarker:v1.6
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
