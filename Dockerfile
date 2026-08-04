@@ -1,13 +1,14 @@
 # Pure-Python image: no bash/curl/jq/kubectl. Arbitrary-UID-safe for OpenShift.
 FROM python:3.12-slim AS build
 WORKDIR /app
-RUN pip install --no-cache-dir uv
 COPY pyproject.toml ./
 COPY src ./src
 COPY README.md ./
-# Vendor deps + the package into a self-contained venv.
-RUN uv venv /opt/venv \
-    && VIRTUAL_ENV=/opt/venv uv pip install --no-cache .
+# Vendor deps + the package into a self-contained venv. Use pip (not uv) so the
+# build survives QEMU emulation for cross-arch (multi-arch) buildx: uv's binary
+# segfaults under emulated amd64, whereas pip installs prebuilt wheels cleanly.
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir .
 
 FROM python:3.12-slim
 ENV PATH="/opt/venv/bin:$PATH" \
