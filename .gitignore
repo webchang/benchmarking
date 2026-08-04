@@ -219,3 +219,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local benchmark result dumps (fetched via the API for review, not source)
+results/

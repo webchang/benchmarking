@@ -180,10 +180,21 @@ endpoint.** Only relevant if benchmarks exercise AuthBridge.
 |----------|-----------|
 | `analyze-run.sh` (see header, ~line 9) | `kubectl port-forward svc/mlflow:5000 -> localhost` |
 
-Off-cluster the service cannot port-forward. **Gap: expose MLflow via a Route/ingress (or add
-a results API)** so the service fetches runs over HTTP. (In **local kind dev/test** this gap does
-not arise: the in-cluster Service reaches `http://mlflow.<ns>.svc.cluster.local:5000` directly, no
-port-forward and no ingress needed.)
+Off-cluster the service cannot port-forward. **Resolved (code side):** the Service now ships an
+in-process MLflow client (no `kubectl port-forward`, no `kubectl` at all) that both **emits** and
+**reads** traces over the same MLflow endpoint + creds from the config API:
+- **read** (`mlflow_report.py` + `auth/mlflow.py`): fetches traces over MLflow REST;
+- **write** (`runner/tracing.py` + `runner/engine.py`): emits the `Agent.Session` trace via
+  OTLP/HTTP straight to MLflow's `{tracking_url}/v1/traces` (skipping the otel-collector).
+
+Reports are exposed at `GET /benchmarks/{name}/runs/{run_id}/report` and
+`GET /benchmarks/{name}/report`. **Remaining gap (infra, not code):** cross-cluster runs still
+require the target MLflow to be reachable off-cluster via a **Route/ingress** — for *both* the REST
+read API and the OTLP `/v1/traces` write endpoint (the default `mlflow.<ns>.svc.cluster.local:5000`
+is not routable off-cluster); and the LLM/tool detail in a report only fills in if the target
+**agent workload exports its own OTEL spans** (the Service supplies the top-level trace regardless).
+(In **local kind dev/test** neither gap arises: the in-cluster Service reaches
+`http://mlflow.<ns>.svc.cluster.local:5000` directly, no port-forward and no ingress needed.)
 
 ### 8. Out of scope for the remote service
 

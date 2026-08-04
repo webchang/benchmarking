@@ -213,6 +213,99 @@ def test_start_run_not_deployed_409(client, make_token, jwks_doc, monkeypatch):
     assert "deploy" in r.json()["detail"].lower()
 
 
+def _otlp_session_span(session_id):
+    base = 1_000_000_000_000
+    return {
+        "name": "Agent.Session",
+        "span_id": "root",
+        "parent_span_id": None,
+        "trace_id": "tr",
+        "start_time_unix_nano": base,
+        "end_time_unix_nano": base + 1_700_000_000,
+        "status": {"code": "STATUS_CODE_OK"},
+        "attributes": [
+            {"key": "metadata.session_id", "value": {"string_value": session_id}},
+            {"key": "metadata.benchmark_name", "value": {"string_value": "gsm8k"}},
+            {"key": "metadata.agent_name", "value": {"string_value": "exgentic-a2a-tool-calling-gsm8k"}},
+        ],
+    }
+
+
+@respx.mock
+def test_run_report_filters_to_run_sessions(tmp_path, make_token, jwks_doc, monkeypatch, instance_dict):
+    # The run produces session "sess-t1"; MLflow also holds an unrelated trace. The
+    # per-run report must return only the trace whose metadata.session_id matches.
+    instance_dict["mlflow"] = {
+        "tracking_url": "http://mlflow.test",
+        "token_url": "http://mlflow.test/token",
+        "client_id": "mlflow-cli",
+        "client_secret": "shh",
+    }
+    (tmp_path / "kc.json").write_text(json.dumps(instance_dict))
+    monkeypatch.setattr(settings, "instances_dir", str(tmp_path))
+
+    _mock_auth(jwks_doc)
+    _mock_ready(True)
+    _install_fakes(monkeypatch)
+
+    respx.post("http://mlflow.test/token").mock(
+        return_value=httpx.Response(200, json={"access_token": "mlf"})
+    )
+    now_ms = int(time.time() * 1000)
+    respx.get(url__regex=r"http://mlflow\.test/api/2\.0/mlflow/traces").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "traces": [
+                    {"request_id": "trace-1", "status": "OK", "timestamp_ms": now_ms, "execution_time_ms": 1700},
+                    {"request_id": "trace-2", "status": "OK", "timestamp_ms": now_ms, "execution_time_ms": 1700},
+                ]
+            },
+        )
+    )
+
+    def _trace_get(request):
+        tid = request.url.params.get("trace_id")
+        session = "sess-t1" if tid == "trace-1" else "other-session"
+        return httpx.Response(200, json={"trace": {"spans": [_otlp_session_span(session)]}})
+
+    respx.get(url__regex=r"http://mlflow\.test/api/3\.0/mlflow/traces/get").mock(side_effect=_trace_get)
+
+    with TestClient(create_app()) as c:
+        headers = _auth(make_token)
+        r = c.post("/benchmarks/gsm8k/runs", headers=headers, json={"max_tasks": 1})
+        assert r.status_code == 202, r.text
+        run_id = r.json()["run_id"]
+        _poll(c, headers, run_id)
+
+        rep = c.get(f"/benchmarks/gsm8k/runs/{run_id}/report", headers=headers)
+        assert rep.status_code == 200, rep.text
+        body = rep.json()
+        assert body["trace_count"] == 1
+        assert [rec["session_id"] for rec in body["records"]] == ["sess-t1"]
+        assert body["records"][0]["total_latency_s"] == 1.7
+
+
+@respx.mock
+def test_run_report_409_when_mlflow_unconfigured(tmp_path, make_token, jwks_doc, monkeypatch, instance_dict):
+    instance_dict.pop("mlflow", None)  # no tracking_url -> report unavailable
+    (tmp_path / "kc.json").write_text(json.dumps(instance_dict))
+    monkeypatch.setattr(settings, "instances_dir", str(tmp_path))
+
+    _mock_auth(jwks_doc)
+    _mock_ready(True)
+    _install_fakes(monkeypatch)
+
+    with TestClient(create_app()) as c:
+        headers = _auth(make_token)
+        r = c.post("/benchmarks/gsm8k/runs", headers=headers, json={"max_tasks": 1})
+        run_id = r.json()["run_id"]
+        _poll(c, headers, run_id)
+        rep = c.get(f"/benchmarks/gsm8k/runs/{run_id}/report", headers=headers)
+        assert rep.status_code == 409, rep.text
+        assert "MLflow not configured" in rep.json()["detail"]
+
+
 class _WedgedMcp:
     """Its __aenter__ never returns — models an MCP Service with no ready endpoints."""
 

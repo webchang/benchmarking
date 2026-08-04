@@ -26,9 +26,13 @@ class A2AAgentClient:
         from a2a.client.card_resolver import A2ACardResolver
         from a2a.types import Role, TaskState, TextPart
 
+        from .tracing import inject_trace_context
+
         headers = {"x-session-id": uuid.uuid4().hex}
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
+        # Nest the agent pod's own spans under the active Agent.Call span (no-op untraced).
+        inject_trace_context(headers)
 
         httpx_client = httpx.AsyncClient(timeout=self._timeout, headers=headers)
         try:

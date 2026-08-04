@@ -17,6 +17,19 @@ class MLflowConfig(BaseModel):
     client_id: str | None = None
     client_secret: str | None = None
     token_url: str | None = None
+    # OpenShift-OAuth-fronted MLflow (RHOAI oauth-proxy, --provider=openshift): the
+    # Service mints a bearer from these creds via the OAuth challenge flow (same as
+    # `oc login -u -p`). When both are set they take precedence over client-credentials.
+    username: str | None = None
+    password: str | None = None
+    oauth_url: str | None = None  # OpenShift OAuth issuer; derived from tracking_url if unset
+    # Pre-obtained bearer, used as-is (e.g. a k8s SA token for RHOAI self-SAR MLflow).
+    # Takes precedence over the two grant flows above.
+    bearer_token: str | None = None
+    # Read-side (report) settings. Set via the instance file or PUT /config.
+    experiment_id: str = "0"
+    workspace: str | None = None  # sent as x-mlflow-workspace (RHOAI/multi-tenant)
+    insecure_tls: bool = False  # skip TLS verify (port-forwarded reencrypt endpoints)
 
 
 class S3Config(BaseModel):
@@ -325,3 +338,85 @@ class RunState(BaseModel):
     summary: RunSummary | None = None
     results: list[TaskResult] = Field(default_factory=list)
     error: str | None = None
+
+
+class MLflowTraceRecord(BaseModel):
+    """One `Agent.Session` trace aggregated into a structured record.
+
+    Mirrors the upstream harness `TraceRecord`: per-session timing breakdown,
+    LLM/tool latencies + token counts, infra CPU/mem, and evaluation outcome —
+    parsed out of the OTEL spans the workload pods export to MLflow.
+    """
+
+    session_id: str
+    agent_name: str
+    benchmark_name: str
+    model: str
+    num_parallel: int
+    status: str
+    total_latency_s: float
+    experiment_name: str = "default"
+    start_time: str = ""
+    evaluation_result: bool | None = None
+    status_message: str = ""
+
+    # Timing from child spans (seconds)
+    session_creation_s: float = 0.0
+    agent_call_s: float = 0.0
+    evaluation_s: float = 0.0
+    llm_total_s: float = 0.0
+    llm_after_obs_s: float = 0.0
+    tool_total_s: float = 0.0
+    time_to_first_obs_s: float = 0.0
+    overhead_s: float = 0.0
+    llm_count: int = 0
+    llm_count_after_obs: int = 0
+    tool_count: int = 0
+    llm_input_tokens: int = 0
+    llm_output_tokens: int = 0
+
+    # Infrastructure metrics per pod
+    mcp_cpu_utilization_pct: float = 0.0
+    mcp_throttle_pct: float = 0.0
+    mcp_memory_max_mb: float = 0.0
+    mcp_memory_utilization_pct: float = 0.0
+    mcp_network_rx_mb: float = 0.0
+    mcp_network_tx_mb: float = 0.0
+    a2a_cpu_utilization_pct: float = 0.0
+    a2a_throttle_pct: float = 0.0
+    a2a_memory_max_mb: float = 0.0
+    a2a_memory_utilization_pct: float = 0.0
+    a2a_network_rx_mb: float = 0.0
+    a2a_network_tx_mb: float = 0.0
+    has_infra: bool = False
+
+
+class RunReportResponse(BaseModel):
+    run_id: str
+    benchmark: str
+    experiment: str
+    trace_count: int
+    records: list[MLflowTraceRecord] = Field(default_factory=list)
+
+
+class ReportAggregate(BaseModel):
+    """Per-group rollup for an experiment report."""
+
+    agent_name: str
+    benchmark_name: str
+    model: str
+    num_parallel: int
+    trace_count: int
+    eval_pass_rate: float
+    total_latency_avg_s: float
+    total_latency_p50_s: float
+    total_latency_p95_s: float
+
+
+class ExperimentReportResponse(BaseModel):
+    benchmark: str
+    experiment: str
+    window_h: float
+    trace_count: int
+    aggregates: list[ReportAggregate] = Field(default_factory=list)
+    records: list[MLflowTraceRecord] = Field(default_factory=list)

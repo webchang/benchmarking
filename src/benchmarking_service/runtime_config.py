@@ -29,7 +29,7 @@ def _redact(model: MLflowConfig | S3Config):
 
 
 def _is_secret_field(name: str) -> bool:
-    return name in ("secret_access_key", "client_secret", "password")
+    return name in ("secret_access_key", "client_secret", "password", "bearer_token")
 
 
 class RuntimeConfigStore:

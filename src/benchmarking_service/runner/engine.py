@@ -10,40 +10,72 @@ errors are captured on the TaskResult (not fatal); a failure before the loop
 """
 
 import asyncio
+import contextlib
+import logging
 import time
+
+from opentelemetry.trace import Status, StatusCode
 
 from ..models import RunState, RunStatus, RunSummary, TaskResult
 from .prompt import build_prompt
 
+logger = logging.getLogger(__name__)
 
-async def _run_task(task_id: str, mcp, a2a) -> TaskResult:
+
+def _span(tracer, name):
+    """Child/root span when tracing, else a no-op yielding None."""
+    return tracer.start_as_current_span(name) if tracer else contextlib.nullcontext()
+
+
+def _set(span, key, value) -> None:
+    if span is not None and value is not None:
+        span.set_attribute(key, value)
+
+
+async def _run_task(task_id: str, mcp, a2a, tracer=None, meta: dict | None = None) -> TaskResult:
     session_id: str | None = None
     started = time.monotonic()
-    try:
-        session_id, task, context = await mcp.create_session(task_id)
-        prompt = build_prompt(task, session_id, context)
-        await a2a.send_prompt(prompt, session_id=session_id)
-        passed = await mcp.evaluate_session(session_id)
-        return TaskResult(
-            task_id=task_id,
-            session_id=session_id,
-            passed=bool(passed),
-            latency_seconds=time.monotonic() - started,
-        )
-    except Exception as exc:  # noqa: BLE001 - per-task failures are captured, not fatal
-        return TaskResult(
-            task_id=task_id,
-            session_id=session_id,
-            passed=False,
-            latency_seconds=time.monotonic() - started,
-            error=str(exc),
-        )
-    finally:
-        if session_id is not None:
-            try:
-                await mcp.delete_session(session_id)
-            except Exception:  # noqa: BLE001 - cleanup is best-effort
-                pass
+    meta = meta or {}
+    with _span(tracer, "Agent.Session") as root:
+        _set(root, "metadata.agent_name", meta.get("agent_name"))
+        _set(root, "metadata.benchmark_name", meta.get("benchmark_name"))
+        _set(root, "metadata.num_parallel_tasks", meta.get("num_parallel_tasks"))
+        _set(root, "metadata.experiment_name", meta.get("experiment_name"))
+        try:
+            with _span(tracer, "MCP.CreateSession"):
+                session_id, task, context = await mcp.create_session(task_id)
+            _set(root, "metadata.session_id", session_id)
+            prompt = build_prompt(task, session_id, context)
+            with _span(tracer, "Agent.Call"):
+                await a2a.send_prompt(prompt, session_id=session_id)
+            with _span(tracer, "Evaluator.Evaluate"):
+                passed = await mcp.evaluate_session(session_id)
+            _set(root, "metadata.evaluation_result", bool(passed))
+            if root is not None:
+                root.set_status(Status(StatusCode.OK))
+            return TaskResult(
+                task_id=task_id,
+                session_id=session_id,
+                passed=bool(passed),
+                latency_seconds=time.monotonic() - started,
+            )
+        except Exception as exc:  # noqa: BLE001 - per-task failures are captured, not fatal
+            if root is not None:
+                root.set_status(Status(StatusCode.ERROR, str(exc)))
+                root.record_exception(exc)
+            return TaskResult(
+                task_id=task_id,
+                session_id=session_id,
+                passed=False,
+                latency_seconds=time.monotonic() - started,
+                error=str(exc),
+            )
+        finally:
+            if session_id is not None:
+                try:
+                    await mcp.delete_session(session_id)
+                except Exception:  # noqa: BLE001 - cleanup is best-effort
+                    pass
 
 
 async def run_benchmark(
@@ -53,35 +85,45 @@ async def run_benchmark(
     *,
     max_tasks: int | None = None,
     max_parallel: int = 1,
+    tracer=None,
+    flush=None,
+    meta: dict | None = None,
 ) -> RunState:
     started = time.monotonic()
-    task_ids = await mcp.list_tasks()
-    if max_tasks is not None and max_tasks > 0:
-        task_ids = task_ids[:max_tasks]
+    try:
+        task_ids = await mcp.list_tasks()
+        if max_tasks is not None and max_tasks > 0:
+            task_ids = task_ids[:max_tasks]
 
-    sem = asyncio.Semaphore(max(1, max_parallel))
-    results: list[TaskResult] = []
-    append_lock = asyncio.Lock()
+        sem = asyncio.Semaphore(max(1, max_parallel))
+        results: list[TaskResult] = []
+        append_lock = asyncio.Lock()
 
-    async def _one(task_id: str) -> None:
-        async with sem:
-            result = await _run_task(task_id, mcp, a2a)
-        async with append_lock:
-            results.append(result)
+        async def _one(task_id: str) -> None:
+            async with sem:
+                result = await _run_task(task_id, mcp, a2a, tracer, meta)
+            async with append_lock:
+                results.append(result)
 
-    await asyncio.gather(*(_one(t) for t in task_ids))
+        await asyncio.gather(*(_one(t) for t in task_ids))
 
-    run.results = results
-    total = len(results)
-    succeeded = sum(1 for r in results if r.error is None)
-    evaluated_pass = sum(1 for r in results if r.passed)
-    run.summary = RunSummary(
-        total=total,
-        succeeded=succeeded,
-        evaluated_pass=evaluated_pass,
-        pass_rate=(evaluated_pass / total) if total else 0.0,
-        wall_seconds=time.monotonic() - started,
-    )
-    run.status = RunStatus.succeeded
-    run.finished_at = time.time()
-    return run
+        run.results = results
+        total = len(results)
+        succeeded = sum(1 for r in results if r.error is None)
+        evaluated_pass = sum(1 for r in results if r.passed)
+        run.summary = RunSummary(
+            total=total,
+            succeeded=succeeded,
+            evaluated_pass=evaluated_pass,
+            pass_rate=(evaluated_pass / total) if total else 0.0,
+            wall_seconds=time.monotonic() - started,
+        )
+        run.status = RunStatus.succeeded
+        run.finished_at = time.time()
+        return run
+    finally:
+        if flush is not None:  # export buffered spans to MLflow, off the loop, before a report reads them.
+            try:
+                await asyncio.to_thread(flush)
+            except Exception:  # noqa: BLE001 - export failures must not fail the run
+                logger.warning("run %s: MLflow span export failed", run.run_id, exc_info=True)

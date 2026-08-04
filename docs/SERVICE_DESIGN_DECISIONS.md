@@ -242,6 +242,66 @@ attempt to smuggle a workload-provided key (e.g. `hf-secret`) through the config
 - **Secrets redacted on read.** `GET /config` returns the *effective* (default + override) config
   with secret-looking fields (`secret_access_key`, `client_secret`, `password`) masked to `***`.
 
+**MLflow reports have two halves: the Service *emits* the `Agent.Session` trace and *reads* it
+back.** The `Agent.Session` trace (with `MCP.CreateSession` / `Agent.Call` / `Evaluator.Evaluate`
+children) was a *runner* responsibility upstream; since the Service replaced the runner, it must
+emit that trace itself or reports come back empty. `runner/tracing.py` builds an OTLP/HTTP exporter
+pointed straight at MLflow's `{tracking_url}/v1/traces` (skipping the cluster otel-collector —
+"option 2"), authed with the same MLflow bearer as the read side plus `x-mlflow-workspace` /
+`x-mlflow-experiment-id` headers, and `runner/engine.py` wraps each task's create/call/evaluate in
+those spans (metadata: `session_id`, `agent_name`, `benchmark_name`, `num_parallel_tasks`,
+`experiment_name`, `evaluation_result`). Emission is **opt-in**: no `tracking_url` ⇒ no tracer ⇒
+the run behaves exactly as before. **Export timing is load-bearing** (learned against live RHOAI
+MLflow): spans must land *as they end during the run*, not in one end-of-run burst. Our first child
+span (`MCP.CreateSession`) has to establish the trace under our experiment/workspace *before* the
+agent pod's own spans (same `trace_id`, propagated via `traceparent`) arrive; if our spans are
+deferred and flushed together afterward, MLflow silently drops them (each OTLP POST returns 200, yet
+the trace never materializes). So `build_tracer` uses a `BatchSpanProcessor` tuned to export
+promptly on its worker thread (`schedule_delay_millis=200`, `max_export_batch_size=1`) —
+non-blocking to the event loop (unlike `SimpleSpanProcessor`, whose synchronous per-span export
+would stall the loop *inside* a session's timed window and distort the latencies we measure) — and
+the engine `force_flush`es the root span (which ends last) at run end via `asyncio.to_thread`. Do
+not "optimize" this into a batched end-of-run flush; it breaks silently. The finer per-LLM/per-tool
+spans (`invoke_agent`/`chat`/
+`execute_tool`) still come from the *agent pod* and only nest under `Agent.Call` if that workload is
+OTEL-instrumented and honors the propagated `traceparent`; the Service-side trace stands on its own
+(those detail fields just stay 0). During a run the *workload pods* may also export their own spans;
+the Service **reads all of them back out** and formats them. `mlflow_report.py` ports the
+upstream harness's read/report side: it mints an MLflow bearer token (`auth/mlflow.py`, no cluster
+Secret read — two auth modes below), lists traces over MLflow REST (`GET /api/2.0/mlflow/traces`, paged
+newest-first with a time cutoff), fetches each trace's spans (`GET /api/3.0/mlflow/traces/get`), and
+aggregates every `Agent.Session` trace into a structured `MLflowTraceRecord` (timing, LLM/tool
+latencies, token counts, infra CPU/mem, eval pass/fail). Two endpoints expose this:
+
+- **`GET /benchmarks/{name}/runs/{run_id}/report`** — scoped to a single run by filtering traces to
+  the run's recorded `session_id`s (`TaskResult.session_id` ↔ trace `metadata.session_id`, an exact
+  match, not a fuzzy time window; the trace listing is still time-bounded to just after run start).
+- **`GET /benchmarks/{name}/report?experiment=&window_h=`** — time-windowed, aggregated across an
+  experiment's runs, grouped by `(agent, benchmark, model, num_parallel)`.
+
+Both return **409** if the instance has no MLflow `tracking_url` configured (set it via `PUT
+/config` or the instance file) and **502** on MLflow auth/transport failure. Caveats: the top-level
+`Agent.Session` timing/eval is always present (the Service emits it), but the LLM/tool/token
+breakdown only fills in if the target **agent workload exports its own OTEL spans**; and both the
+emit and read paths require the target MLflow to be reachable off-cluster for cross-cluster runs (a
+Route + its OTLP `/v1/traces` endpoint, not the default `mlflow.<ns>.svc.cluster.local:5000`).
+Setting `insecure_tls` on the MLflow config skips TLS verification for port-forwarded reencrypt
+endpoints (both the read client and the OTLP exporter session).
+
+**Two MLflow auth modes (`auth/mlflow.py:mlflow_token`), chosen by config:**
+
+- **Keycloak client-credentials** (default): a `grant_type=client_credentials` POST to
+  `token_url` with `client_id`/`client_secret`. Used when MLflow trusts the same OIDC issuer.
+- **OpenShift OAuth** (when `username`+`password` are set): the RHOAI-managed MLflow Route is
+  fronted by an OpenShift `oauth-proxy` (`--provider=openshift`) that accepts an **OpenShift**
+  bearer token, not a Keycloak one. The Service turns the stored password into a bearer via the
+  OAuth **challenge** flow — the same mechanism as `oc login -u … -p …`: `GET
+  {oauth}/oauth/authorize?client_id=openshift-challenging-client&response_type=token` with an
+  `Authorization: Basic user:pass` header returns a 302 whose `Location` fragment carries
+  `access_token`. This is fully automated (no browser/kubectl) and cross-cluster-friendly (pure
+  HTTP). `oauth_url` defaults to `oauth-openshift.<apps-domain>` derived from `tracking_url`'s
+  ingress wildcard (the fixed OpenShift convention), or can be set explicitly.
+
 ### Dev/test users: ROPC + seeded credentials (Device Flow is unnecessary here)
 
 For a **dev/test environment**, all non-interactive users (not just `benchmarker`) are

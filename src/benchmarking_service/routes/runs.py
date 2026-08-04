@@ -2,20 +2,25 @@ import asyncio
 import logging
 import time
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from .. import mlflow_report
 from ..auth import ropc
+from ..auth.mlflow import MLflowAuthError, mlflow_token
 from ..auth.ropc import ROPCLoginError
 from ..benchmarks import registry as reg
 from ..benchmarks.registry import BENCHMARKS
+from ..config import settings
 from ..context import RequestContext
 from ..deps import require_caller_jwt
-from ..models import RunRequest, RunState
+from ..models import ExperimentReportResponse, RunReportResponse, RunRequest, RunState
 from ..models import RunStatus
 from ..rossoctl.client import RossoctlClient, RossoctlError
 from ..runner import engine
 from ..runner.a2a_agent import A2AAgentClient
 from ..runner.mcp_session import McpEvalSession
+from ..runner.tracing import build_tracer
 
 router = APIRouter(prefix="/benchmarks", tags=["runs"])
 logger = logging.getLogger(__name__)
@@ -29,7 +34,16 @@ def _build_clients(mcp_url: str, agent_url: str, token: str | None, timeout: flo
     )
 
 
-async def _execute(run: RunState, mcp_url: str, agent_url: str, token: str | None, req: RunRequest) -> None:
+async def _execute(
+    run: RunState,
+    mcp_url: str,
+    agent_url: str,
+    token: str | None,
+    req: RunRequest,
+    tracer=None,
+    flush=None,
+    meta: dict | None = None,
+) -> None:
     run.status = RunStatus.running
     run.started_at = time.time()
 
@@ -42,6 +56,9 @@ async def _execute(run: RunState, mcp_url: str, agent_url: str, token: str | Non
                 a2a_client,
                 max_tasks=req.max_tasks,
                 max_parallel=req.max_parallel_sessions,
+                tracer=tracer,
+                flush=flush,
+                meta=meta,
             )
 
     inner = asyncio.create_task(_go())
@@ -149,9 +166,38 @@ async def start_run(
     agent_url = reg.agent_url(
         defn, req.agent, req.namespace, req.experiment, ctx.instance.agent_endpoint_template
     )
-    task = asyncio.create_task(_execute(run, mcp_url, agent_url, token, req))
+
+    meta = {
+        "agent_name": req.agent,
+        "benchmark_name": name,
+        "num_parallel_tasks": req.max_parallel_sessions,
+        "experiment_name": req.experiment,
+    }
+    tracer, flush = await _build_run_tracer(request, ctx, run.run_id)
+
+    task = asyncio.create_task(
+        _execute(run, mcp_url, agent_url, token, req, tracer, flush, meta)
+    )
     runs.attach_task(run.run_id, task)
     return {"run_id": run.run_id, "status": run.status.value}
+
+
+async def _build_run_tracer(request: Request, ctx: RequestContext, run_id: str):
+    """Build an OTLP tracer + flush callable for the instance's effective MLflow, or (None, None).
+
+    A tracing misconfig (no tracking_url, auth/transport failure) never fails the run — it just
+    runs untraced, and its report stays empty until MLflow is configured.
+    """
+    cfg = request.app.state.config_overrides.effective(ctx.instance.iss, ctx.instance).mlflow
+    if not cfg.tracking_url:
+        return None, None
+    try:
+        token = await mlflow_token(cfg, request.app.state.http)
+        built = build_tracer(cfg, token)
+    except (MLflowAuthError, httpx.HTTPError) as exc:
+        logger.warning("run %s: MLflow tracing disabled (%s)", run_id, exc)
+        return None, None
+    return built if built else (None, None)
 
 
 @router.get("/{name}/runs")
@@ -177,3 +223,96 @@ async def get_run(
     if run is None or run.benchmark != name:
         raise HTTPException(status_code=404, detail=f"unknown run: {run_id}")
     return run
+
+
+async def _collect_records(
+    request: Request,
+    ctx: RequestContext,
+    *,
+    experiment_filter: str | None = None,
+    since_ms: int | None = None,
+) -> list:
+    """Read MLflow traces for the caller's instance and parse them to records.
+
+    Uses the effective (file default + PUT /config override) MLflow config. 409 if
+    the instance has no MLflow tracking URL configured; 502 on auth/transport error.
+    """
+    cfg = request.app.state.config_overrides.effective(ctx.instance.iss, ctx.instance).mlflow
+    if not cfg.tracking_url:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "MLflow not configured for this instance. Set tracking_url + client "
+                "credentials via PUT /config (or in the instance file)."
+            ),
+        )
+    try:
+        if cfg.insecure_tls:
+            async with httpx.AsyncClient(
+                timeout=settings.http_timeout_seconds, verify=False
+            ) as client:
+                token = await mlflow_token(cfg, client)
+                traces = await mlflow_report.download_traces(
+                    client, cfg, token, experiment_filter=experiment_filter, since_ms=since_ms
+                )
+        else:
+            client = request.app.state.http
+            token = await mlflow_token(cfg, client)
+            traces = await mlflow_report.download_traces(
+                client, cfg, token, experiment_filter=experiment_filter, since_ms=since_ms
+            )
+    except MLflowAuthError as exc:
+        raise HTTPException(status_code=502, detail=f"MLflow auth failed: {exc}") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"MLflow request failed: {exc}") from exc
+    return mlflow_report.parse_traces(traces)
+
+
+@router.get("/{name}/runs/{run_id}/report", response_model=RunReportResponse)
+async def get_run_report(
+    name: str,
+    run_id: str,
+    request: Request,
+    ctx: RequestContext = Depends(require_caller_jwt),
+) -> RunReportResponse:
+    """Structured MLflow report scoped to a single run (filtered to its session ids)."""
+    _definition(name)
+    run = request.app.state.runs.get(run_id, ctx.instance.iss)
+    if run is None or run.benchmark != name:
+        raise HTTPException(status_code=404, detail=f"unknown run: {run_id}")
+    # Bound the trace listing to just after this run started (60s slack for clock skew).
+    since_ms = int(run.started_at * 1000) - 60_000 if run.started_at else None
+    records = await _collect_records(request, ctx, since_ms=since_ms)
+    records = mlflow_report.filter_by_sessions(records, [r.session_id for r in run.results])
+    return RunReportResponse(
+        run_id=run.run_id,
+        benchmark=run.benchmark,
+        experiment=run.experiment,
+        trace_count=len(records),
+        records=records,
+    )
+
+
+@router.get("/{name}/report", response_model=ExperimentReportResponse)
+async def get_experiment_report(
+    name: str,
+    request: Request,
+    experiment: str = "default",
+    window_h: float = 3.0,
+    ctx: RequestContext = Depends(require_caller_jwt),
+) -> ExperimentReportResponse:
+    """Structured MLflow report aggregated across an experiment's runs (time-windowed)."""
+    _definition(name)
+    since_ms = int((time.time() - window_h * 3600) * 1000)
+    records = await _collect_records(
+        request, ctx, experiment_filter=experiment, since_ms=since_ms
+    )
+    records = [r for r in records if r.benchmark_name == name]
+    return ExperimentReportResponse(
+        benchmark=name,
+        experiment=experiment,
+        window_h=window_h,
+        trace_count=len(records),
+        aggregates=mlflow_report.aggregate(records),
+        records=records,
+    )

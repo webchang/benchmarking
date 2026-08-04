@@ -61,6 +61,40 @@ def test_benchmarker_put_then_get_redacts_secrets(client, make_token, jwks_doc):
 
 
 @respx.mock
+def test_mlflow_read_fields_round_trip(client, make_token, jwks_doc):
+    # The read-side MLflow fields (experiment_id/workspace/insecure_tls) are non-secret
+    # and must survive a PUT/GET round-trip; only client_secret is redacted.
+    _mock_jwks(jwks_doc)
+    headers = _auth(make_token(preferred_username="benchmarker"))
+
+    put = client.put(
+        "/config",
+        headers=headers,
+        json={
+            "mlflow": {
+                "experiment_id": "1",
+                "workspace": "team1",
+                "insecure_tls": True,
+                "username": "admin",
+                "client_secret": "hunter2",
+                "password": "pw",
+                "bearer_token": "sa-jwt",
+            }
+        },
+    )
+    assert put.status_code == 200, put.text
+
+    g = client.get("/config", headers=headers).json()["mlflow"]
+    assert g["experiment_id"] == "1"
+    assert g["workspace"] == "team1"
+    assert g["insecure_tls"] is True
+    assert g["username"] == "admin"  # non-secret, visible
+    assert g["client_secret"] == "***"
+    assert g["password"] == "***"
+    assert g["bearer_token"] == "***"
+
+
+@respx.mock
 def test_non_benchmarker_forbidden(client, make_token, jwks_doc):
     _mock_jwks(jwks_doc)
     headers = _auth(make_token())  # default alice
