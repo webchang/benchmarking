@@ -288,6 +288,19 @@ Route + its OTLP `/v1/traces` endpoint, not the default `mlflow.<ns>.svc.cluster
 Setting `insecure_tls` on the MLflow config skips TLS verification for port-forwarded reencrypt
 endpoints (both the read client and the OTLP exporter session).
 
+**Getting the agent's own LLM/tool spans (optional `workload_otel`).** The exgentic agent's OTLP
+exporter supports only endpoint/protocol/insecure — it cannot set the auth headers an authenticated
+MLflow requires — so it can't post directly to MLflow. The upstream pattern is agent → an in-cluster
+otel-collector (no auth) → MLflow (headers added by the collector). To wire the agent at deploy time,
+set `workload_otel` in the instance file (`enabled`, `endpoint`, `protocol`, `insecure`,
+`service_name`, `resource_attributes`); `build_agent_request` then injects `EXGENTIC_OTEL_ENABLED` +
+`OTEL_EXPORTER_OTLP_*` onto the agent pod. This is opt-in and off by default (no OTEL env injected
+when `workload_otel` is unset/`enabled:false`), and only sets the agent's exporter target — the
+collector and its MLflow-forward config are provisioned out-of-band. The `traceparent` the Service
+already injects makes those spans nest under `Agent.Session`, filling the LLM/tool/token detail. Note
+this is *agent-side* config living in the instance file, distinct from `PUT /config`, which only
+manages the Service's own MLflow/S3.
+
 **Two MLflow auth modes (`auth/mlflow.py:mlflow_token`), chosen by config:**
 
 - **Keycloak client-credentials** (default): a `grant_type=client_credentials` POST to

@@ -17,6 +17,7 @@ from ..models import (
     SecretKeyRef,
     ServicePort,
     ToolCreateRequest,
+    WorkloadOTELConfig,
 )
 
 
@@ -123,12 +124,29 @@ def build_tool_request(defn: "BenchmarkDefinition", namespace: str) -> ToolCreat
     )
 
 
+def _otel_env(cfg: WorkloadOTELConfig) -> list[EnvVar]:
+    """OTEL exporter env for the agent pod (points it at a collector that forwards to MLflow)."""
+    env = [EnvVar(name="EXGENTIC_OTEL_ENABLED", value="true")]
+    if cfg.endpoint:
+        env += [
+            EnvVar(name="OTEL_EXPORTER_OTLP_ENDPOINT", value=cfg.endpoint),
+            EnvVar(name="OTEL_EXPORTER_OTLP_PROTOCOL", value=cfg.protocol),
+            EnvVar(name="OTEL_EXPORTER_OTLP_INSECURE", value="true" if cfg.insecure else "false"),
+        ]
+    if cfg.service_name:
+        env.append(EnvVar(name="OTEL_SERVICE_NAME", value=cfg.service_name))
+    if cfg.resource_attributes:
+        env.append(EnvVar(name="OTEL_RESOURCE_ATTRIBUTES", value=cfg.resource_attributes))
+    return env
+
+
 def build_agent_request(
     defn: "BenchmarkDefinition",
     agent: str,
     namespace: str,
     model: str | None,
     experiment: str = "default",
+    otel: WorkloadOTELConfig | None = None,
 ) -> AgentCreateRequest:
     spec = defn.agents[agent]
     resolved_model = model or defn.default_model
@@ -139,6 +157,8 @@ def build_agent_request(
         EnvVar(name="LLM_MODEL", value=resolved_model),
         EnvVar(name="EXGENTIC_SET_AGENT_MODEL", value=resolved_model),
     ]
+    if otel is not None and otel.enabled:
+        injected += _otel_env(otel)
     return AgentCreateRequest(
         name=agent_name(defn.name, agent, experiment),
         namespace=namespace,

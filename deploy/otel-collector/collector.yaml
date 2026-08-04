@@ -1,0 +1,153 @@
+# OTEL collector for cross-cluster trace forwarding.
+#
+# Runs on the WORKLOAD cluster (e.g. ykt2) in the workload namespace. The exgentic agent
+# pod exports OTLP to this collector with NO auth (its exporter can't set headers); the
+# collector adds the MLflow auth headers and forwards to the MLflow cluster's OTLP endpoint
+# (e.g. ykt3). This is the intermediary that makes the agent's LLM/tool spans land in the
+# MLflow that the Service reads — nesting under the `Agent.Session` trace via the traceparent
+# the Service already injects.
+#
+# Pair with `workload_otel` in the Service instance file so the agent is pointed here at deploy:
+#   workload_otel:
+#     enabled: true
+#     endpoint: http://otel-collector.team1.svc.cluster.local:8335
+#     protocol: http/protobuf
+#
+# Before applying, create the forward bearer as a Secret (NOT committed here). Prefer a
+# long-lived ServiceAccount token scoped to the MLflow workspace over `oc whoami -t`, which
+# expires:
+#   oc create secret generic mlflow-forward-bearer -n team1 \
+#     --from-literal=token="$(oc --context ykt3 whoami -t)"
+#
+# Then edit the ConfigMap below: MLflow traces_endpoint host, x-mlflow-experiment-id,
+# x-mlflow-workspace. Apply with:  oc apply -n team1 -f deploy/otel-collector/collector.yaml
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: team1
+  labels:
+    app: otel-collector
+data:
+  collector.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          # Agent exports here (OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector...:8335,
+          # protocol http/protobuf). 8335 matches the upstream deploy-agent.sh convention.
+          http:
+            endpoint: 0.0.0.0:8335
+          grpc:
+            endpoint: 0.0.0.0:4317
+    processors:
+      batch: {}
+    exporters:
+      otlphttp/mlflow:
+        # Exact MLflow OTLP path on the target (MLflow) cluster's Route.
+        traces_endpoint: https://rh-ai.apps.ykt3.hcp.res.ibm.com/mlflow/v1/traces
+        headers:
+          authorization: "Bearer ${env:MLFLOW_BEARER_TOKEN}"
+          x-mlflow-experiment-id: "3"
+          x-mlflow-workspace: "team1"
+        tls:
+          # The rh-ai Route has a valid cert; set true only for port-forwarded reencrypt.
+          insecure_skip_verify: false
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [otlphttp/mlflow]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: team1
+  labels:
+    app: otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      # Arbitrary-UID-safe for OpenShift restricted-v2: let the SCC assign the UID; the
+      # collector image runs fine as any non-root UID.
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: otel-collector
+          # Contrib image (bundles health_check). Pin to a version present in your registry.
+          image: otel/opentelemetry-collector-contrib:0.116.0
+          args: ["--config=/conf/collector.yaml"]
+          env:
+            - name: MLFLOW_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-forward-bearer
+                  key: token
+          ports:
+            - name: otlp-http
+              containerPort: 8335
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: health
+              containerPort: 13133
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 20
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: team1
+  labels:
+    app: otel-collector
+spec:
+  type: ClusterIP
+  selector:
+    app: otel-collector
+  ports:
+    - name: otlp-http
+      port: 8335
+      targetPort: otlp-http
+      protocol: TCP
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+      protocol: TCP

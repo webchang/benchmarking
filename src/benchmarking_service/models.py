@@ -32,6 +32,27 @@ class MLflowConfig(BaseModel):
     insecure_tls: bool = False  # skip TLS verify (port-forwarded reencrypt endpoints)
 
 
+class WorkloadOTELConfig(BaseModel):
+    """OTEL exporter env injected into the *agent* workload pod at deploy time.
+
+    The exgentic agent's exporter cannot set auth headers, so it can't post directly to an
+    authenticated MLflow. Instead the Service points it at an in-cluster otel-collector (no
+    auth) that forwards to MLflow with the required headers. The Service only sets these env
+    vars on the agent; the collector and its MLflow-forward config are provisioned out-of-band.
+
+    Mirrors the upstream `OTELConfig.from_env()` knobs (endpoint/protocol/insecure/service
+    name/resource attrs) plus the `EXGENTIC_OTEL_ENABLED` gate. The `traceparent` the Service
+    already injects on its A2A call makes the agent's spans nest under the `Agent.Session` trace.
+    """
+
+    enabled: bool = False
+    endpoint: str | None = None  # OTEL_EXPORTER_OTLP_ENDPOINT (collector, no auth)
+    protocol: str = "http/protobuf"  # OTEL_EXPORTER_OTLP_PROTOCOL
+    insecure: bool = True  # OTEL_EXPORTER_OTLP_INSECURE (in-cluster plaintext)
+    service_name: str | None = None  # OTEL_SERVICE_NAME
+    resource_attributes: str | None = None  # OTEL_RESOURCE_ATTRIBUTES
+
+
 class S3Config(BaseModel):
     """Service-enacted object store for hosting benchmark-result artifacts.
 
@@ -73,6 +94,9 @@ class InstanceConfig(BaseModel):
     s3: S3Config = Field(default_factory=S3Config)
     mcp_endpoint_template: str | None = None
     agent_endpoint_template: str | None = None
+    # Optional OTEL env injected into the agent pod at deploy (points it at a collector that
+    # forwards to MLflow). Set out-of-band in the instance file, like the endpoint templates.
+    workload_otel: WorkloadOTELConfig | None = None
 
 
 class ConfigUpdateRequest(BaseModel):

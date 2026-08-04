@@ -8,6 +8,7 @@ from ..benchmarks.registry import (
     build_tool_request,
     tool_name,
 )
+from ..context import RequestContext
 from ..deps import bound_rossoctl_client, require_caller_jwt
 from ..models import (
     BenchmarkStatusResponse,
@@ -57,6 +58,7 @@ async def deploy_benchmark(
     name: str,
     req: DeployBenchmarkRequest,
     client: RossoctlClient = Depends(bound_rossoctl_client),
+    ctx: RequestContext = Depends(require_caller_jwt),
 ) -> DeployBenchmarkResponse:
     defn = _definition(name)
     if req.agent not in defn.agents:
@@ -64,7 +66,9 @@ async def deploy_benchmark(
             status_code=404, detail=f"unknown agent '{req.agent}' for benchmark '{name}'"
         )
     tool_req = build_tool_request(defn, req.namespace)
-    agent_req = build_agent_request(defn, req.agent, req.namespace, req.model, req.experiment)
+    agent_req = build_agent_request(
+        defn, req.agent, req.namespace, req.model, req.experiment, ctx.instance.workload_otel
+    )
     try:
         tool_resp = await client.create_tool(tool_req.to_rossoctl_body())
         agent_resp = await client.create_agent(agent_req.to_rossoctl_body())

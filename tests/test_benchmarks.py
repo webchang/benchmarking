@@ -63,6 +63,46 @@ def test_registry_builders_gsm8k():
     assert a_env["EXGENTIC_SET_AGENT_ENABLE_TOOL_SHORTLISTING"] == "true"
 
 
+def test_agent_no_otel_env_by_default():
+    defn = registry.BENCHMARKS["gsm8k"]
+    agent = registry.build_agent_request(defn, "tool_calling", "team1", None, "default")
+    names = {e.name for e in agent.env_vars}
+    assert not any(n.startswith("OTEL_") or n == "EXGENTIC_OTEL_ENABLED" for n in names)
+
+
+def test_agent_otel_env_injected_when_enabled():
+    from benchmarking_service.models import WorkloadOTELConfig
+
+    defn = registry.BENCHMARKS["gsm8k"]
+    otel = WorkloadOTELConfig(
+        enabled=True,
+        endpoint="http://otel-collector.team1.svc.cluster.local:8335",
+        service_name="exgentic-a2a-tool-calling-gsm8k",
+        resource_attributes="cluster=ykt2",
+    )
+    agent = registry.build_agent_request(defn, "tool_calling", "team1", None, "default", otel)
+    env = {e.name: e.value for e in agent.env_vars}
+    assert env["EXGENTIC_OTEL_ENABLED"] == "true"
+    assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://otel-collector.team1.svc.cluster.local:8335"
+    assert env["OTEL_EXPORTER_OTLP_PROTOCOL"] == "http/protobuf"
+    assert env["OTEL_EXPORTER_OTLP_INSECURE"] == "true"
+    assert env["OTEL_SERVICE_NAME"] == "exgentic-a2a-tool-calling-gsm8k"
+    assert env["OTEL_RESOURCE_ATTRIBUTES"] == "cluster=ykt2"
+    # The MCP_URL/model injection is unaffected.
+    assert env["MCP_URL"] == "http://exgentic-mcp-gsm8k-mcp.team1.svc.cluster.local:8000/mcp"
+
+
+def test_agent_otel_disabled_config_injects_nothing():
+    from benchmarking_service.models import WorkloadOTELConfig
+
+    defn = registry.BENCHMARKS["gsm8k"]
+    otel = WorkloadOTELConfig(enabled=False, endpoint="http://collector:8335")
+    agent = registry.build_agent_request(defn, "tool_calling", "team1", None, "default", otel)
+    names = {e.name for e in agent.env_vars}
+    assert "EXGENTIC_OTEL_ENABLED" not in names
+    assert not any(n.startswith("OTEL_") for n in names)
+
+
 def test_agent_name_experiment_suffix():
     assert registry.agent_name("gsm8k", "tool_calling", "exp1") == "exgentic-a2a-tool-calling-gsm8k-exp1"
     assert registry.agent_name("gsm8k", "tool_calling", "default") == "exgentic-a2a-tool-calling-gsm8k"
@@ -156,6 +196,28 @@ def test_deploy_gsm8k_issues_tool_then_agent(client, make_token, jwks_doc):
     assert agent_env["MCP_URL"] == "http://exgentic-mcp-gsm8k-mcp.team1.svc.cluster.local:8000/mcp"
     assert agent_env["LLM_MODEL"] == "openai/Qwen3.6-35B-A3B"
     assert agent_env["EXGENTIC_SET_AGENT_ENABLE_TOOL_SHORTLISTING"] == "true"
+
+
+@respx.mock
+def test_deploy_injects_workload_otel_from_instance(tmp_path, instance_dict, monkeypatch, make_token, jwks_doc):
+    instance_dict["workload_otel"] = {
+        "enabled": True,
+        "endpoint": "http://otel-collector.team1.svc.cluster.local:8335",
+    }
+    (tmp_path / "kc.json").write_text(json.dumps(instance_dict))
+    monkeypatch.setattr(settings, "instances_dir", str(tmp_path))
+    _mock_auth(jwks_doc)
+    respx.post(f"{ROSSOCTL_URL}/api/v1/tools").mock(return_value=httpx.Response(201, json={}))
+    agent_route = respx.post(f"{ROSSOCTL_URL}/api/v1/agents").mock(
+        return_value=httpx.Response(201, json={})
+    )
+    with TestClient(create_app()) as c:
+        r = c.post("/benchmarks/gsm8k/deploy", headers=_auth(make_token), json={})
+    assert r.status_code == 201, r.text
+    agent_env = {e["name"]: e.get("value") for e in json.loads(agent_route.calls.last.request.content)["envVars"]}
+    assert agent_env["EXGENTIC_OTEL_ENABLED"] == "true"
+    assert agent_env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://otel-collector.team1.svc.cluster.local:8335"
+    assert agent_env["OTEL_EXPORTER_OTLP_PROTOCOL"] == "http/protobuf"
 
 
 @respx.mock
