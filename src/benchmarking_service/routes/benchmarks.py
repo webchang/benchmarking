@@ -65,7 +65,7 @@ async def deploy_benchmark(
         raise HTTPException(
             status_code=404, detail=f"unknown agent '{req.agent}' for benchmark '{name}'"
         )
-    tool_req = build_tool_request(defn, req.namespace)
+    tool_req = build_tool_request(defn, req.namespace, req.model)
     agent_req = build_agent_request(
         defn, req.agent, req.namespace, req.model, req.experiment, ctx.instance.workload_otel
     )

@@ -49,6 +49,9 @@ class BenchmarkDefinition(BaseModel):
     tool_env: list[EnvVar] = Field(default_factory=list)
     tool_resources: AgentResources | None = None
     default_model: str = "openai/Qwen3.6-35B-A3B"
+    # Multi-turn benchmarks (e.g. tau2) run a user-simulator LLM server-side in the MCP pod; it
+    # needs the simulator model injected as env. gsm8k (single-turn) leaves this false.
+    user_simulator: bool = False
     agents: dict[str, BenchmarkAgentSpec] = Field(default_factory=dict)
 
 
@@ -112,13 +115,22 @@ def required_secrets(defn: "BenchmarkDefinition", agent: str) -> list[tuple[str,
     return out
 
 
-def build_tool_request(defn: "BenchmarkDefinition", namespace: str) -> ToolCreateRequest:
+def build_tool_request(
+    defn: "BenchmarkDefinition", namespace: str, model: str | None = None
+) -> ToolCreateRequest:
+    env_vars = list(defn.tool_env)
+    if defn.user_simulator:
+        # The user-simulator LLM shares the run's model with the agent (resolved the same way as
+        # build_agent_request). Empty model falls back to the benchmark's default.
+        env_vars.append(
+            EnvVar(name="EXGENTIC_SET_BENCHMARK_USER_SIMULATOR_MODEL", value=model or defn.default_model)
+        )
     return ToolCreateRequest(
         name=tool_name(defn.name),
         namespace=namespace,
         container_image=defn.mcp_image,
         image_tag=defn.mcp_image_tag,
-        env_vars=list(defn.tool_env),
+        env_vars=env_vars,
         service_ports=[ServicePort(port=defn.mcp_port, target_port=defn.mcp_port)],
         resources=defn.tool_resources,
     )
@@ -192,6 +204,36 @@ BENCHMARKS: dict[str, BenchmarkDefinition] = {
         ],
         tool_resources=_TOOL_RESOURCES,
         agents={
+            "tool_calling": BenchmarkAgentSpec(
+                container_image="ghcr.io/exgentic/exgentic-a2a-tool_calling:latest",
+                extra_env=[
+                    _secret_env("OPENAI_API_KEY", "openai-secret", "apikey"),
+                    EnvVar(name="OPENAI_API_BASE", value=_LITELLM_BASE_URL),
+                    EnvVar(name="LLM_API_BASE", value=_LITELLM_BASE_URL),
+                    EnvVar(name="EXGENTIC_SET_AGENT_ENABLE_TOOL_SHORTLISTING", value="true"),
+                    EnvVar(name="EXGENTIC_DEFAULT_RUNNER", value="thread"),
+                    EnvVar(name="LITELLM_LOCAL_MODEL_COST_MAP", value="True"),
+                ],
+                resources=_AGENT_RESOURCES,
+            ),
+        },
+    ),
+    "tau2": BenchmarkDefinition(
+        name="tau2",
+        mcp_image="ghcr.io/exgentic/exgentic-mcp-tau2:latest",
+        tool_env=[
+            EnvVar(name="BENCHMARK_NAME", value="tau2"),
+            _secret_env("OPENAI_API_KEY", "openai-secret", "apikey"),
+            EnvVar(name="OPENAI_API_BASE", value=_LITELLM_BASE_URL),
+            # deploy-benchmark.sh appends this for tau* benchmarks.
+            EnvVar(name="EXGENTIC_SET_BENCHMARK_ACTION_TIMEOUT", value="1000"),
+        ],
+        # Multi-turn: the MCP pod runs a user-simulator LLM (model injected by build_tool_request).
+        user_simulator=True,
+        tool_resources=_TOOL_RESOURCES,
+        agents={
+            # tool_calling agent is benchmark-agnostic (same image as gsm8k); only its name gets
+            # the -tau2 suffix.
             "tool_calling": BenchmarkAgentSpec(
                 container_image="ghcr.io/exgentic/exgentic-a2a-tool_calling:latest",
                 extra_env=[

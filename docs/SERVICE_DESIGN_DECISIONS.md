@@ -201,6 +201,30 @@ provisioning flow.
   `preferred_username` principal — this conflicts with the `preferred_username`-based
   authorization check above and is therefore not chosen without also changing that check.
 
+### Benchmark catalog: single-turn (gsm8k) vs multi-turn (tau2)
+
+The runnable benchmarks are declared statically in `benchmarks/registry.py::BENCHMARKS`. Two are
+supported:
+
+- **`gsm8k`** — single-turn: one prompt → agent answer → evaluate. Its MCP tool needs
+  `hf-secret/hf-token` (dataset access) and `EXGENTIC_SET_BENCHMARK_RUNNER=direct`.
+- **`tau2`** — **multi-turn**: a user-simulator LLM converses with the agent over several turns.
+  Critically, **the multi-turn loop and the simulator LLM run server-side, inside the
+  `exgentic-mcp-tau2` MCP pod** — not in the Service/runner. The Service performs the *identical*
+  `create_session → send_prompt → evaluate_session` MCP/A2A flow as gsm8k; multi-turn is invisible
+  to it. The only tau2-specific deployment fact is that the MCP tool needs the simulator model
+  injected as env `EXGENTIC_SET_BENCHMARK_USER_SIMULATOR_MODEL`.
+
+`BenchmarkDefinition.user_simulator: bool` marks a benchmark as multi-turn; when set,
+`build_tool_request(defn, namespace, model)` appends the simulator-model env, resolving the model
+the same way `build_agent_request` does (the run's `--model`, else `default_model`) so the agent and
+simulator share one model. The `tool_calling` agent image is benchmark-agnostic and shared across
+both benchmarks; only the agent *name* carries the `-tau2` suffix. tau2 points its simulator at the
+same LiteLLM base and `openai-secret/apikey` gsm8k's agent uses, and carries
+`EXGENTIC_SET_BENCHMARK_ACTION_TIMEOUT=1000` (per the upstream `deploy-benchmark.sh` default for
+tau*). Note: multi-turn sessions can exceed the default 300s `RunRequest.timeout_seconds`; pass a
+larger value for tau2 runs.
+
 ### Workload-provided credentials vs Service-enacted config
 
 A benchmark has its own configuration/credential requirements, and they fall into **two disjoint

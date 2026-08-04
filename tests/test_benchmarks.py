@@ -63,6 +63,42 @@ def test_registry_builders_gsm8k():
     assert a_env["EXGENTIC_SET_AGENT_ENABLE_TOOL_SHORTLISTING"] == "true"
 
 
+def test_gsm8k_tool_has_no_simulator_model():
+    defn = registry.BENCHMARKS["gsm8k"]
+    tool = registry.build_tool_request(defn, "team1", "openai/gpt-4o")
+    names = {e.name for e in tool.env_vars}
+    assert "EXGENTIC_SET_BENCHMARK_USER_SIMULATOR_MODEL" not in names
+
+
+def test_tau2_tool_injects_simulator_model():
+    defn = registry.BENCHMARKS["tau2"]
+    tool = registry.build_tool_request(defn, "team1", "openai/gpt-4o")
+    assert tool.name == "exgentic-mcp-tau2"
+    assert tool.container_image == "ghcr.io/exgentic/exgentic-mcp-tau2:latest"
+    tool_env = {e.name: e.value for e in tool.env_vars if e.value is not None}
+    assert tool_env["BENCHMARK_NAME"] == "tau2"
+    assert tool_env["EXGENTIC_SET_BENCHMARK_USER_SIMULATOR_MODEL"] == "openai/gpt-4o"
+    assert tool_env["EXGENTIC_SET_BENCHMARK_ACTION_TIMEOUT"] == "1000"
+    # tau2 is not gsm8k: no HF_TOKEN, no direct runner.
+    assert "EXGENTIC_SET_BENCHMARK_RUNNER" not in tool_env
+    names = {e.name for e in tool.env_vars}
+    assert "HF_TOKEN" not in names
+
+
+def test_tau2_simulator_model_defaults_when_unset():
+    defn = registry.BENCHMARKS["tau2"]
+    tool = registry.build_tool_request(defn, "team1")
+    tool_env = {e.name: e.value for e in tool.env_vars if e.value is not None}
+    assert tool_env["EXGENTIC_SET_BENCHMARK_USER_SIMULATOR_MODEL"] == defn.default_model
+
+
+def test_tau2_agent_name_and_image_shared():
+    defn = registry.BENCHMARKS["tau2"]
+    agent = registry.build_agent_request(defn, "tool_calling", "team1", None, "default")
+    assert agent.name == "exgentic-a2a-tool-calling-tau2"
+    assert agent.container_image == "ghcr.io/exgentic/exgentic-a2a-tool_calling:latest"
+
+
 def test_agent_no_otel_env_by_default():
     defn = registry.BENCHMARKS["gsm8k"]
     agent = registry.build_agent_request(defn, "tool_calling", "team1", None, "default")
@@ -152,6 +188,7 @@ def test_list_benchmarks(client, make_token, jwks_doc):
     items = r.json()["items"]
     names = [i["name"] for i in items]
     assert "gsm8k" in names
+    assert "tau2" in names
 
 
 @respx.mock
@@ -196,6 +233,28 @@ def test_deploy_gsm8k_issues_tool_then_agent(client, make_token, jwks_doc):
     assert agent_env["MCP_URL"] == "http://exgentic-mcp-gsm8k-mcp.team1.svc.cluster.local:8000/mcp"
     assert agent_env["LLM_MODEL"] == "openai/Qwen3.6-35B-A3B"
     assert agent_env["EXGENTIC_SET_AGENT_ENABLE_TOOL_SHORTLISTING"] == "true"
+
+
+@respx.mock
+def test_deploy_tau2_injects_simulator_model(client, make_token, jwks_doc):
+    _mock_auth(jwks_doc)
+    tool_route = respx.post(f"{ROSSOCTL_URL}/api/v1/tools").mock(
+        return_value=httpx.Response(201, json={"name": "exgentic-mcp-tau2"})
+    )
+    agent_route = respx.post(f"{ROSSOCTL_URL}/api/v1/agents").mock(
+        return_value=httpx.Response(201, json={"name": "exgentic-a2a-tool-calling-tau2"})
+    )
+    r = client.post(
+        "/benchmarks/tau2/deploy",
+        headers=_auth(make_token),
+        json={"model": "openai/gpt-4o"},
+    )
+    assert r.status_code == 201, r.text
+    tool_env = {e["name"]: e.get("value") for e in json.loads(tool_route.calls.last.request.content)["envVars"]}
+    assert tool_env["EXGENTIC_SET_BENCHMARK_USER_SIMULATOR_MODEL"] == "openai/gpt-4o"
+    assert tool_env["BENCHMARK_NAME"] == "tau2"
+    agent_env = {e["name"]: e.get("value") for e in json.loads(agent_route.calls.last.request.content)["envVars"]}
+    assert agent_env["LLM_MODEL"] == "openai/gpt-4o"
 
 
 @respx.mock
