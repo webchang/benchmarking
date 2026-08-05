@@ -201,13 +201,28 @@ provisioning flow.
   `preferred_username` principal — this conflicts with the `preferred_username`-based
   authorization check above and is therefore not chosen without also changing that check.
 
-### Benchmark catalog: single-turn (gsm8k) vs multi-turn (tau2)
+### Benchmark catalog: single-turn (gsm8k) vs multi-turn (tau2) vs appworld
 
-The runnable benchmarks are declared statically in `benchmarks/registry.py::BENCHMARKS`. Two are
+The runnable benchmarks are declared statically in `benchmarks/registry.py::BENCHMARKS`. Three are
 supported:
 
 - **`gsm8k`** — single-turn: one prompt → agent answer → evaluate. Its MCP tool needs
   `hf-secret/hf-token` (dataset access) and `EXGENTIC_SET_BENCHMARK_RUNNER=direct`.
+- **`appworld`** — the simplest catalog entry to declare: its upstream `.env.appworld` is empty, so
+  the MCP tool takes no dataset secret and no simulator. Its `tool_env` is just
+  `BENCHMARK_NAME=appworld` + `OPENAI_API_BASE` (LiteLLM) — **no** `HF_TOKEN` (gsm8k-only), **no**
+  simulator model (tau*-only), **no** `direct` runner (gsm8k-only), and — unlike gsm8k/tau2 — **no**
+  `EXGENTIC_SET_BENCHMARK_ACTION_TIMEOUT`. The upstream `deploy-benchmark.sh` blanket-injects that
+  action-timeout env for every benchmark, but the published `exgentic-mcp-appworld` image does **not**
+  expose `action_timeout` as a benchmark override (its schema is `docker_socket`/`env_kwargs`/
+  `max_interactions`/`runner`/`seed`/`subset`/`tool_name_separator`/`use_cache`), and injecting it
+  crashes the MCP pod at startup with `Unknown benchmark override 'action_timeout'`. This was found by
+  e2e-deploying against the live image; the registry entry omits it. Like the others appworld reuses
+  the shared benchmark-agnostic `tool_calling` agent image (only the agent *name* gets the `-appworld`
+  suffix) and rides the *identical* `list_tasks → create_session → send_prompt → evaluate_session` run
+  path — no engine/runner change. Note the reference runs use `--model gemini-2.5-pro`, which must
+  actually be served by the shared LiteLLM endpoint — a model-availability matter, not a Service
+  capability.
 - **`tau2`** — **multi-turn**: a user-simulator LLM converses with the agent over several turns.
   Critically, **the multi-turn loop and the simulator LLM run server-side, inside the
   `exgentic-mcp-tau2` MCP pod** — not in the Service/runner. The Service performs the *identical*
@@ -250,6 +265,36 @@ evaluation). Implications for comparative evaluation:
 - tau2 report records show `model: unknown` and `llm_*: 0`: the multi-turn loop + simulator run
   server-side in the MCP pod, so the Agent-side traces the report is built from don't capture the
   model name or token counts. This is expected and identical on every cluster.
+
+### AuthBridge: what the deploy API can and cannot enact
+
+AuthBridge config for a workload agent is a **3-layer model**, and only part of it is reachable
+over the rossoctl HTTP API the Service talks to:
+
+1. **Cluster/Helm base pipeline** (`authbridge-runtime-config` ConfigMap) — which plugins run
+   inbound/outbound, cluster-wide. Not per-agent, not API-settable.
+2. **Per-agent coarse knobs** on `POST /api/v1/agents` — `authBridgeEnabled`, plus
+   `authBridgeMode`/`mtlsMode`/`tlsBridgeEnabled`/`defaultOutboundPolicy`/`outboundRoutes`/
+   ports-exclude. These *are* settable over HTTP.
+3. **Per-agent plugin composition + `on_error` policy** (`authbridge-config-<agent>` ConfigMap) —
+   exactly what the upstream harness `--plugin-preset {auth-only|ibac-only|full}`,
+   `--plugin NAME:{enforce|observe|off}`, `--no-plugin`, and `--plugin-config-file` control. This is
+   enacted **only** by a kubectl overlay of that per-agent ConfigMap plus a sidecar hot-reload
+   (`authbridge/apply-pipeline.sh`). **There is no preset / plugin-list / `on_error` field anywhere
+   in the backend HTTP request path.**
+
+The Service is HTTP-only and typically targets a *remote* workload cluster with no kubeconfig, so it
+can enact layer 2 but never layer 3. `DeployBenchmarkRequest.authbridge_enabled` (→ `authBridgeEnabled`
+on the agent create body) is the one AuthBridge knob exposed today: it injects the sidecar running the
+**cluster-default** pipeline (so it approximates the harness's `full` run *iff* the cluster base is
+`full`; it cannot reproduce `auth-only`/`ibac-only` or `ibac:observe` canaries). The richer layer-2
+knobs are backend-supported but intentionally not exposed — the reference runs don't use them.
+
+The layer-3 selectors (`plugin_preset`/`plugins`/`plugin_config_file`) are accepted on the deploy
+request **only to reject them with a 422** naming the ConfigMap-overlay requirement. Without this, the
+request model would silently ignore an unknown `plugin_preset` and deploy the sidecar with the default
+pipeline while the caller believed they got `ibac-only` — a silent mis-deploy the 422 converts into an
+actionable error.
 
 ### Workload-provided credentials vs Service-enacted config
 

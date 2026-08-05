@@ -65,9 +65,26 @@ async def deploy_benchmark(
         raise HTTPException(
             status_code=404, detail=f"unknown agent '{req.agent}' for benchmark '{name}'"
         )
+    if req.plugin_preset or req.plugins or req.plugin_config_file:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "AuthBridge plugin-pipeline composition (plugin_preset/plugins/"
+                "plugin_config_file) is not enactable via this Service: it requires overlaying "
+                "the per-agent authbridge-config ConfigMap on the workload cluster (kubectl), "
+                "which the HTTP-only Service cannot do. Use authbridge_enabled=true to inject "
+                "the sidecar with the cluster-default pipeline."
+            ),
+        )
     tool_req = build_tool_request(defn, req.namespace, req.model)
     agent_req = build_agent_request(
-        defn, req.agent, req.namespace, req.model, req.experiment, ctx.instance.workload_otel
+        defn,
+        req.agent,
+        req.namespace,
+        req.model,
+        req.experiment,
+        ctx.instance.workload_otel,
+        req.authbridge_enabled,
     )
     try:
         tool_resp = await client.create_tool(tool_req.to_rossoctl_body())

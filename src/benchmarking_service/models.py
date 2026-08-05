@@ -299,6 +299,16 @@ class DeployBenchmarkRequest(BaseModel):
     model: str | None = None
     namespace: str = "team1"
     experiment: str = "default"
+    # Layer-2 AuthBridge knob the Service CAN enact over HTTP: injects the sidecar with the
+    # cluster-default pipeline (emitted as `authBridgeEnabled` in the agents POST).
+    authbridge_enabled: bool = False
+    # Layer-3 plugin-pipeline composition (harness `--plugin-preset`/`--plugin NAME:POLICY`/
+    # `--plugin-config-file`). NOT enactable here: it needs a kubectl overlay of the per-agent
+    # `authbridge-config-<agent>` ConfigMap, which the HTTP-only Service cannot do. Accepted only
+    # so the deploy route can reject them with an actionable 422 instead of silently ignoring them.
+    plugin_preset: str | None = None
+    plugins: list[str] | None = None
+    plugin_config_file: str | None = None
 
 
 class DeployBenchmarkResponse(BaseModel):

@@ -99,6 +99,32 @@ def test_tau2_agent_name_and_image_shared():
     assert agent.container_image == "ghcr.io/exgentic/exgentic-a2a-tool_calling:latest"
 
 
+def test_appworld_tool_minimal_env():
+    defn = registry.BENCHMARKS["appworld"]
+    tool = registry.build_tool_request(defn, "team1", "gemini-2.5-pro")
+    assert tool.name == "exgentic-mcp-appworld"
+    assert tool.container_image == "ghcr.io/exgentic/exgentic-mcp-appworld:latest"
+    tool_env = {e.name: e.value for e in tool.env_vars if e.value is not None}
+    assert tool_env["BENCHMARK_NAME"] == "appworld"
+    # appworld is single-agent and neither gsm8k nor tau2; the appworld MCP image also rejects the
+    # action_timeout override, so it must not be injected.
+    names = {e.name for e in tool.env_vars}
+    assert "EXGENTIC_SET_BENCHMARK_ACTION_TIMEOUT" not in names
+    assert "EXGENTIC_SET_BENCHMARK_USER_SIMULATOR_MODEL" not in names
+    assert "EXGENTIC_SET_BENCHMARK_RUNNER" not in names
+    assert "HF_TOKEN" not in names
+
+
+def test_appworld_agent_name_and_image_shared():
+    defn = registry.BENCHMARKS["appworld"]
+    agent = registry.build_agent_request(defn, "tool_calling", "team1", "gemini-2.5-pro", "default")
+    assert agent.name == "exgentic-a2a-tool-calling-appworld"
+    assert agent.container_image == "ghcr.io/exgentic/exgentic-a2a-tool_calling:latest"
+    a_env = {e.name: e.value for e in agent.env_vars if e.value is not None}
+    assert a_env["LLM_MODEL"] == "gemini-2.5-pro"
+    assert a_env["MCP_URL"] == "http://exgentic-mcp-appworld-mcp.team1.svc.cluster.local:8000/mcp"
+
+
 def test_agent_no_otel_env_by_default():
     defn = registry.BENCHMARKS["gsm8k"]
     agent = registry.build_agent_request(defn, "tool_calling", "team1", None, "default")
@@ -137,6 +163,22 @@ def test_agent_otel_disabled_config_injects_nothing():
     names = {e.name for e in agent.env_vars}
     assert "EXGENTIC_OTEL_ENABLED" not in names
     assert not any(n.startswith("OTEL_") for n in names)
+
+
+def test_agent_authbridge_disabled_by_default():
+    defn = registry.BENCHMARKS["gsm8k"]
+    agent = registry.build_agent_request(defn, "tool_calling", "team1", None, "default")
+    assert agent.authbridge_enabled is False
+    assert agent.to_rossoctl_body()["authBridgeEnabled"] is False
+
+
+def test_agent_authbridge_enabled_flows_to_wire():
+    defn = registry.BENCHMARKS["gsm8k"]
+    agent = registry.build_agent_request(
+        defn, "tool_calling", "team1", None, "default", None, True
+    )
+    assert agent.authbridge_enabled is True
+    assert agent.to_rossoctl_body()["authBridgeEnabled"] is True
 
 
 def test_agent_name_experiment_suffix():
@@ -189,6 +231,7 @@ def test_list_benchmarks(client, make_token, jwks_doc):
     names = [i["name"] for i in items]
     assert "gsm8k" in names
     assert "tau2" in names
+    assert "appworld" in names
 
 
 @respx.mock
@@ -258,6 +301,36 @@ def test_deploy_tau2_injects_simulator_model(client, make_token, jwks_doc):
 
 
 @respx.mock
+def test_deploy_appworld_issues_tool_then_agent(client, make_token, jwks_doc):
+    _mock_auth(jwks_doc)
+    tool_route = respx.post(f"{ROSSOCTL_URL}/api/v1/tools").mock(
+        return_value=httpx.Response(201, json={"name": "exgentic-mcp-appworld"})
+    )
+    agent_route = respx.post(f"{ROSSOCTL_URL}/api/v1/agents").mock(
+        return_value=httpx.Response(201, json={"name": "exgentic-a2a-tool-calling-appworld"})
+    )
+    r = client.post(
+        "/benchmarks/appworld/deploy",
+        headers=_auth(make_token),
+        json={"model": "gemini-2.5-pro"},
+    )
+    assert r.status_code == 201, r.text
+    data = r.json()
+    assert data["tool_name"] == "exgentic-mcp-appworld"
+    assert data["agent_name"] == "exgentic-a2a-tool-calling-appworld"
+
+    tool_body = json.loads(tool_route.calls.last.request.content)
+    assert tool_body["containerImage"] == "ghcr.io/exgentic/exgentic-mcp-appworld:latest"
+    tool_env = {e["name"]: e.get("value") for e in tool_body["envVars"]}
+    assert tool_env["BENCHMARK_NAME"] == "appworld"
+    assert "EXGENTIC_SET_BENCHMARK_USER_SIMULATOR_MODEL" not in tool_env
+    assert "EXGENTIC_SET_BENCHMARK_RUNNER" not in tool_env
+
+    agent_env = {e["name"]: e.get("value") for e in json.loads(agent_route.calls.last.request.content)["envVars"]}
+    assert agent_env["LLM_MODEL"] == "gemini-2.5-pro"
+
+
+@respx.mock
 def test_deploy_injects_workload_otel_from_instance(tmp_path, instance_dict, monkeypatch, make_token, jwks_doc):
     instance_dict["workload_otel"] = {
         "enabled": True,
@@ -295,6 +368,59 @@ def test_deploy_with_model_override(client, make_token, jwks_doc):
     agent_env = {e["name"]: e.get("value") for e in json.loads(agent_route.calls.last.request.content)["envVars"]}
     assert agent_env["LLM_MODEL"] == "openai/gpt-4o"
     assert agent_env["EXGENTIC_SET_AGENT_MODEL"] == "openai/gpt-4o"
+
+
+@respx.mock
+def test_deploy_default_sidecar_off(client, make_token, jwks_doc):
+    _mock_auth(jwks_doc)
+    respx.post(f"{ROSSOCTL_URL}/api/v1/tools").mock(return_value=httpx.Response(201, json={}))
+    agent_route = respx.post(f"{ROSSOCTL_URL}/api/v1/agents").mock(
+        return_value=httpx.Response(201, json={})
+    )
+    r = client.post("/benchmarks/gsm8k/deploy", headers=_auth(make_token), json={})
+    assert r.status_code == 201, r.text
+    agent_body = json.loads(agent_route.calls.last.request.content)
+    assert agent_body["authBridgeEnabled"] is False
+
+
+@respx.mock
+def test_deploy_authbridge_enabled_sets_sidecar(client, make_token, jwks_doc):
+    _mock_auth(jwks_doc)
+    respx.post(f"{ROSSOCTL_URL}/api/v1/tools").mock(return_value=httpx.Response(201, json={}))
+    agent_route = respx.post(f"{ROSSOCTL_URL}/api/v1/agents").mock(
+        return_value=httpx.Response(201, json={})
+    )
+    r = client.post(
+        "/benchmarks/gsm8k/deploy",
+        headers=_auth(make_token),
+        json={"authbridge_enabled": True},
+    )
+    assert r.status_code == 201, r.text
+    agent_body = json.loads(agent_route.calls.last.request.content)
+    assert agent_body["authBridgeEnabled"] is True
+
+
+@respx.mock
+def test_deploy_rejects_plugin_preset_422(client, make_token, jwks_doc):
+    _mock_auth(jwks_doc)
+    r = client.post(
+        "/benchmarks/gsm8k/deploy",
+        headers=_auth(make_token),
+        json={"plugin_preset": "ibac-only"},
+    )
+    assert r.status_code == 422
+    assert "authbridge-config" in r.json()["detail"]
+
+
+@respx.mock
+def test_deploy_rejects_plugins_list_422(client, make_token, jwks_doc):
+    _mock_auth(jwks_doc)
+    r = client.post(
+        "/benchmarks/gsm8k/deploy",
+        headers=_auth(make_token),
+        json={"plugins": ["ibac:observe"]},
+    )
+    assert r.status_code == 422
 
 
 @respx.mock

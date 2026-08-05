@@ -159,6 +159,7 @@ def build_agent_request(
     model: str | None,
     experiment: str = "default",
     otel: WorkloadOTELConfig | None = None,
+    authbridge_enabled: bool = False,
 ) -> AgentCreateRequest:
     spec = defn.agents[agent]
     resolved_model = model or defn.default_model
@@ -179,6 +180,7 @@ def build_agent_request(
         env_vars=list(spec.extra_env) + injected,
         service_ports=[ServicePort(port=8080, target_port=8000)],
         resources=spec.resources,
+        authbridge_enabled=authbridge_enabled,
     )
 
 
@@ -234,6 +236,38 @@ BENCHMARKS: dict[str, BenchmarkDefinition] = {
         agents={
             # tool_calling agent is benchmark-agnostic (same image as gsm8k); only its name gets
             # the -tau2 suffix.
+            "tool_calling": BenchmarkAgentSpec(
+                container_image="ghcr.io/exgentic/exgentic-a2a-tool_calling:latest",
+                extra_env=[
+                    _secret_env("OPENAI_API_KEY", "openai-secret", "apikey"),
+                    EnvVar(name="OPENAI_API_BASE", value=_LITELLM_BASE_URL),
+                    EnvVar(name="LLM_API_BASE", value=_LITELLM_BASE_URL),
+                    EnvVar(name="EXGENTIC_SET_AGENT_ENABLE_TOOL_SHORTLISTING", value="true"),
+                    EnvVar(name="EXGENTIC_DEFAULT_RUNNER", value="thread"),
+                    EnvVar(name="LITELLM_LOCAL_MODEL_COST_MAP", value="True"),
+                ],
+                resources=_AGENT_RESOURCES,
+            ),
+        },
+    ),
+    "appworld": BenchmarkDefinition(
+        name="appworld",
+        mcp_image="ghcr.io/exgentic/exgentic-mcp-appworld:latest",
+        # Upstream .env.appworld is explicitly empty ("Not required by appworld"). Unlike tau*/gsm8k,
+        # the appworld MCP server does NOT accept the `benchmark.action_timeout` override (its schema
+        # is docker_socket/env_kwargs/max_interactions/runner/seed/subset/tool_name_separator/
+        # use_cache) — injecting EXGENTIC_SET_BENCHMARK_ACTION_TIMEOUT crashes the pod at startup with
+        # "Unknown benchmark override 'action_timeout'". So tool_env is just BENCHMARK_NAME +
+        # OPENAI_API_BASE (LiteLLM). No HF_TOKEN (gsm8k-only), no simulator (tau*-only), no direct
+        # runner (gsm8k-only), no action timeout (rejected by appworld).
+        tool_env=[
+            EnvVar(name="BENCHMARK_NAME", value="appworld"),
+            EnvVar(name="OPENAI_API_BASE", value=_LITELLM_BASE_URL),
+        ],
+        tool_resources=_TOOL_RESOURCES,
+        agents={
+            # tool_calling agent is benchmark-agnostic (same image as gsm8k/tau2); only its name
+            # gets the -appworld suffix.
             "tool_calling": BenchmarkAgentSpec(
                 container_image="ghcr.io/exgentic/exgentic-a2a-tool_calling:latest",
                 extra_env=[
