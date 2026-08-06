@@ -1,0 +1,1853 @@
+openapi: 3.1.0
+info:
+  title: Benchmarking Service
+  version: 0.1.0
+paths:
+  /hello:
+    get:
+      tags:
+      - hello
+      summary: Hello
+      description: Echo the validated caller-JWT claims. No Rossoctl call; no aud/exp
+        gating.
+      operationId: hello_hello_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HelloResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /namespaces:
+    get:
+      tags:
+      - benchmark
+      summary: Namespaces
+      description: 'Two-token smoke: ROPC login as benchmarker, then GET Rossoctl
+        namespaces.'
+      operationId: namespaces_namespaces_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NamespacesResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agents:
+    get:
+      tags:
+      - agents
+      summary: List Agents
+      operationId: list_agents_agents_get
+      parameters:
+      - name: namespace
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Namespace
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response List Agents Agents Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      tags:
+      - agents
+      summary: Create Agent
+      operationId: create_agent_agents_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentCreateRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Create Agent Agents Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agents/{namespace}/{name}:
+    get:
+      tags:
+      - agents
+      summary: Get Agent
+      operationId: get_agent_agents__namespace___name__get
+      parameters:
+      - name: namespace
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Namespace
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Name
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Agent Agents  Namespace   Name  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - agents
+      summary: Delete Agent
+      operationId: delete_agent_agents__namespace___name__delete
+      parameters:
+      - name: namespace
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Namespace
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Name
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /tools:
+    get:
+      tags:
+      - tools
+      summary: List Tools
+      operationId: list_tools_tools_get
+      parameters:
+      - name: namespace
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Namespace
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response List Tools Tools Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      tags:
+      - tools
+      summary: Create Tool
+      operationId: create_tool_tools_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToolCreateRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Create Tool Tools Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /tools/{namespace}/{name}:
+    get:
+      tags:
+      - tools
+      summary: Get Tool
+      operationId: get_tool_tools__namespace___name__get
+      parameters:
+      - name: namespace
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Namespace
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Name
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Tool Tools  Namespace   Name  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - tools
+      summary: Delete Tool
+      operationId: delete_tool_tools__namespace___name__delete
+      parameters:
+      - name: namespace
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Namespace
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Name
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /benchmarks:
+    get:
+      tags:
+      - benchmarks
+      summary: List Benchmarks
+      operationId: list_benchmarks_benchmarks_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response List Benchmarks Benchmarks Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /benchmarks/{name}:
+    get:
+      tags:
+      - benchmarks
+      summary: Get Benchmark
+      operationId: get_benchmark_benchmarks__name__get
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Name
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Benchmark Benchmarks  Name  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /benchmarks/{name}/deploy:
+    post:
+      tags:
+      - benchmarks
+      summary: Deploy Benchmark
+      operationId: deploy_benchmark_benchmarks__name__deploy_post
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Name
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeployBenchmarkRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeployBenchmarkResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - benchmarks
+      summary: Teardown Benchmark
+      operationId: teardown_benchmark_benchmarks__name__deploy_delete
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Name
+      - name: namespace
+        in: query
+        required: false
+        schema:
+          type: string
+          default: team1
+          title: Namespace
+      - name: agent
+        in: query
+        required: false
+        schema:
+          type: string
+          default: tool_calling
+          title: Agent
+      - name: experiment
+        in: query
+        required: false
+        schema:
+          type: string
+          default: default
+          title: Experiment
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /benchmarks/{name}/status:
+    get:
+      tags:
+      - benchmarks
+      summary: Benchmark Status
+      operationId: benchmark_status_benchmarks__name__status_get
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Name
+      - name: namespace
+        in: query
+        required: false
+        schema:
+          type: string
+          default: team1
+          title: Namespace
+      - name: agent
+        in: query
+        required: false
+        schema:
+          type: string
+          default: tool_calling
+          title: Agent
+      - name: experiment
+        in: query
+        required: false
+        schema:
+          type: string
+          default: default
+          title: Experiment
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BenchmarkStatusResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /benchmarks/{name}/runs:
+    post:
+      tags:
+      - runs
+      summary: Start Run
+      operationId: start_run_benchmarks__name__runs_post
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Name
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunRequest'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Start Run Benchmarks  Name  Runs Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - runs
+      summary: List Runs
+      operationId: list_runs_benchmarks__name__runs_get
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Name
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response List Runs Benchmarks  Name  Runs Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /benchmarks/{name}/runs/{run_id}:
+    get:
+      tags:
+      - runs
+      summary: Get Run
+      operationId: get_run_benchmarks__name__runs__run_id__get
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Name
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunState'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /benchmarks/{name}/runs/{run_id}/report:
+    get:
+      tags:
+      - runs
+      summary: Get Run Report
+      description: Structured MLflow report scoped to a single run (filtered to its
+        session ids).
+      operationId: get_run_report_benchmarks__name__runs__run_id__report_get
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Name
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunReportResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /benchmarks/{name}/report:
+    get:
+      tags:
+      - runs
+      summary: Get Experiment Report
+      description: Structured MLflow report aggregated across an experiment's runs
+        (time-windowed).
+      operationId: get_experiment_report_benchmarks__name__report_get
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Name
+      - name: experiment
+        in: query
+        required: false
+        schema:
+          type: string
+          default: default
+          title: Experiment
+      - name: window_h
+        in: query
+        required: false
+        schema:
+          type: number
+          default: 3.0
+          title: Window H
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExperimentReportResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /config:
+    get:
+      tags:
+      - config
+      summary: Get Config
+      description: Effective Service-enacted config for the caller's instance, secrets
+        redacted.
+      operationId: get_config_config_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - config
+      summary: Update Config
+      description: Set/update Service-enactable config (MLflow, S3). Workload creds
+        are rejected (422).
+      operationId: update_config_config_put
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigUpdateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+components:
+  schemas:
+    AgentCreateRequest:
+      properties:
+        name:
+          type: string
+          title: Name
+        namespace:
+          type: string
+          title: Namespace
+        container_image:
+          type: string
+          title: Container Image
+        image_tag:
+          type: string
+          title: Image Tag
+          default: ''
+        env_vars:
+          items:
+            $ref: '#/components/schemas/EnvVar'
+          type: array
+          title: Env Vars
+        service_ports:
+          items:
+            $ref: '#/components/schemas/ServicePort'
+          type: array
+          title: Service Ports
+        resources:
+          anyOf:
+          - $ref: '#/components/schemas/AgentResources'
+          - type: 'null'
+        image_pull_policy:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Image Pull Policy
+        protocol:
+          type: string
+          title: Protocol
+          default: a2a
+        framework:
+          type: string
+          title: Framework
+          default: custom
+        deployment_method:
+          type: string
+          title: Deployment Method
+          default: image
+        workload_type:
+          type: string
+          title: Workload Type
+          default: deployment
+        create_http_route:
+          type: boolean
+          title: Create Http Route
+          default: true
+        authbridge_enabled:
+          type: boolean
+          title: Authbridge Enabled
+          default: false
+        spire_enabled:
+          type: boolean
+          title: Spire Enabled
+          default: false
+      type: object
+      required:
+      - name
+      - namespace
+      - container_image
+      title: AgentCreateRequest
+    AgentResources:
+      properties:
+        requests:
+          anyOf:
+          - $ref: '#/components/schemas/ResourceQuantities'
+          - type: 'null'
+        limits:
+          anyOf:
+          - $ref: '#/components/schemas/ResourceQuantities'
+          - type: 'null'
+      type: object
+      title: AgentResources
+    BenchmarkStatusResponse:
+      properties:
+        benchmark:
+          type: string
+          title: Benchmark
+        namespace:
+          type: string
+          title: Namespace
+        tool_name:
+          type: string
+          title: Tool Name
+        agent_name:
+          type: string
+          title: Agent Name
+        tool_ready:
+          type: boolean
+          title: Tool Ready
+        agent_ready:
+          type: boolean
+          title: Agent Ready
+        tool_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tool Status
+        agent_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Status
+      type: object
+      required:
+      - benchmark
+      - namespace
+      - tool_name
+      - agent_name
+      - tool_ready
+      - agent_ready
+      title: BenchmarkStatusResponse
+    ConfigResponse:
+      properties:
+        iss:
+          type: string
+          title: Iss
+        mlflow:
+          $ref: '#/components/schemas/MLflowConfig'
+        s3:
+          $ref: '#/components/schemas/S3Config'
+      type: object
+      required:
+      - iss
+      - mlflow
+      - s3
+      title: ConfigResponse
+      description: Effective Service-enacted config for an instance, with secret fields
+        redacted.
+    ConfigUpdateRequest:
+      properties:
+        mlflow:
+          anyOf:
+          - $ref: '#/components/schemas/MLflowConfig'
+          - type: 'null'
+        s3:
+          anyOf:
+          - $ref: '#/components/schemas/S3Config'
+          - type: 'null'
+      additionalProperties: false
+      type: object
+      title: ConfigUpdateRequest
+      description: 'Benchmarker-only config update. Accepts ONLY parameters the Service
+        can enact.
+
+
+        `extra="forbid"` is the guard: an attempt to set a workload-provided credential
+
+        (e.g. `hf-secret`) — which the Service never sets — is rejected as 422. Workload
+
+        credentials are provisioned out-of-band and verified by the workload precheck.'
+    DeployBenchmarkRequest:
+      properties:
+        agent:
+          type: string
+          title: Agent
+          default: tool_calling
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
+        namespace:
+          type: string
+          title: Namespace
+          default: team1
+        experiment:
+          type: string
+          title: Experiment
+          default: default
+        authbridge_enabled:
+          type: boolean
+          title: Authbridge Enabled
+          default: false
+        plugin_preset:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Plugin Preset
+        plugins:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Plugins
+        plugin_config_file:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Plugin Config File
+      type: object
+      title: DeployBenchmarkRequest
+    DeployBenchmarkResponse:
+      properties:
+        benchmark:
+          type: string
+          title: Benchmark
+        namespace:
+          type: string
+          title: Namespace
+        tool_name:
+          type: string
+          title: Tool Name
+        agent_name:
+          type: string
+          title: Agent Name
+        tool:
+          additionalProperties: true
+          type: object
+          title: Tool
+        agent:
+          additionalProperties: true
+          type: object
+          title: Agent
+      type: object
+      required:
+      - benchmark
+      - namespace
+      - tool_name
+      - agent_name
+      - tool
+      - agent
+      title: DeployBenchmarkResponse
+    EnvVar:
+      properties:
+        name:
+          type: string
+          title: Name
+        value:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Value
+        value_from:
+          anyOf:
+          - $ref: '#/components/schemas/EnvVarSource'
+          - type: 'null'
+      type: object
+      required:
+      - name
+      title: EnvVar
+    EnvVarSource:
+      properties:
+        secret_key_ref:
+          $ref: '#/components/schemas/SecretKeyRef'
+      type: object
+      required:
+      - secret_key_ref
+      title: EnvVarSource
+    ExperimentReportResponse:
+      properties:
+        benchmark:
+          type: string
+          title: Benchmark
+        experiment:
+          type: string
+          title: Experiment
+        window_h:
+          type: number
+          title: Window H
+        trace_count:
+          type: integer
+          title: Trace Count
+        aggregates:
+          items:
+            $ref: '#/components/schemas/ReportAggregate'
+          type: array
+          title: Aggregates
+        records:
+          items:
+            $ref: '#/components/schemas/MLflowTraceRecord'
+          type: array
+          title: Records
+      type: object
+      required:
+      - benchmark
+      - experiment
+      - window_h
+      - trace_count
+      title: ExperimentReportResponse
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    HelloResponse:
+      properties:
+        iss:
+          type: string
+          title: Iss
+        preferred_username:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Preferred Username
+        rossoctl_base_url:
+          type: string
+          title: Rossoctl Base Url
+        claims:
+          additionalProperties: true
+          type: object
+          title: Claims
+      type: object
+      required:
+      - iss
+      - preferred_username
+      - rossoctl_base_url
+      - claims
+      title: HelloResponse
+    MLflowConfig:
+      properties:
+        tracking_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tracking Url
+        client_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Client Id
+        client_secret:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Client Secret
+        token_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Token Url
+        username:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Username
+        password:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Password
+        oauth_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Oauth Url
+        bearer_token:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bearer Token
+        experiment_id:
+          type: string
+          title: Experiment Id
+          default: '0'
+        workspace:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Workspace
+        insecure_tls:
+          type: boolean
+          title: Insecure Tls
+          default: false
+      type: object
+      title: MLflowConfig
+    MLflowTraceRecord:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        agent_name:
+          type: string
+          title: Agent Name
+        benchmark_name:
+          type: string
+          title: Benchmark Name
+        model:
+          type: string
+          title: Model
+        num_parallel:
+          type: integer
+          title: Num Parallel
+        status:
+          type: string
+          title: Status
+        total_latency_s:
+          type: number
+          title: Total Latency S
+        experiment_name:
+          type: string
+          title: Experiment Name
+          default: default
+        start_time:
+          type: string
+          title: Start Time
+          default: ''
+        evaluation_result:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Evaluation Result
+        status_message:
+          type: string
+          title: Status Message
+          default: ''
+        session_creation_s:
+          type: number
+          title: Session Creation S
+          default: 0.0
+        agent_call_s:
+          type: number
+          title: Agent Call S
+          default: 0.0
+        evaluation_s:
+          type: number
+          title: Evaluation S
+          default: 0.0
+        llm_total_s:
+          type: number
+          title: Llm Total S
+          default: 0.0
+        llm_after_obs_s:
+          type: number
+          title: Llm After Obs S
+          default: 0.0
+        tool_total_s:
+          type: number
+          title: Tool Total S
+          default: 0.0
+        time_to_first_obs_s:
+          type: number
+          title: Time To First Obs S
+          default: 0.0
+        overhead_s:
+          type: number
+          title: Overhead S
+          default: 0.0
+        llm_count:
+          type: integer
+          title: Llm Count
+          default: 0
+        llm_count_after_obs:
+          type: integer
+          title: Llm Count After Obs
+          default: 0
+        tool_count:
+          type: integer
+          title: Tool Count
+          default: 0
+        llm_input_tokens:
+          type: integer
+          title: Llm Input Tokens
+          default: 0
+        llm_output_tokens:
+          type: integer
+          title: Llm Output Tokens
+          default: 0
+        mcp_cpu_utilization_pct:
+          type: number
+          title: Mcp Cpu Utilization Pct
+          default: 0.0
+        mcp_throttle_pct:
+          type: number
+          title: Mcp Throttle Pct
+          default: 0.0
+        mcp_memory_max_mb:
+          type: number
+          title: Mcp Memory Max Mb
+          default: 0.0
+        mcp_memory_utilization_pct:
+          type: number
+          title: Mcp Memory Utilization Pct
+          default: 0.0
+        mcp_network_rx_mb:
+          type: number
+          title: Mcp Network Rx Mb
+          default: 0.0
+        mcp_network_tx_mb:
+          type: number
+          title: Mcp Network Tx Mb
+          default: 0.0
+        a2a_cpu_utilization_pct:
+          type: number
+          title: A2A Cpu Utilization Pct
+          default: 0.0
+        a2a_throttle_pct:
+          type: number
+          title: A2A Throttle Pct
+          default: 0.0
+        a2a_memory_max_mb:
+          type: number
+          title: A2A Memory Max Mb
+          default: 0.0
+        a2a_memory_utilization_pct:
+          type: number
+          title: A2A Memory Utilization Pct
+          default: 0.0
+        a2a_network_rx_mb:
+          type: number
+          title: A2A Network Rx Mb
+          default: 0.0
+        a2a_network_tx_mb:
+          type: number
+          title: A2A Network Tx Mb
+          default: 0.0
+        has_infra:
+          type: boolean
+          title: Has Infra
+          default: false
+      type: object
+      required:
+      - session_id
+      - agent_name
+      - benchmark_name
+      - model
+      - num_parallel
+      - status
+      - total_latency_s
+      title: MLflowTraceRecord
+      description: 'One `Agent.Session` trace aggregated into a structured record.
+
+
+        Mirrors the upstream harness `TraceRecord`: per-session timing breakdown,
+
+        LLM/tool latencies + token counts, infra CPU/mem, and evaluation outcome —
+
+        parsed out of the OTEL spans the workload pods export to MLflow.'
+    NamespacesResponse:
+      properties:
+        namespaces:
+          items: {}
+          type: array
+          title: Namespaces
+      type: object
+      required:
+      - namespaces
+      title: NamespacesResponse
+    ReportAggregate:
+      properties:
+        agent_name:
+          type: string
+          title: Agent Name
+        benchmark_name:
+          type: string
+          title: Benchmark Name
+        model:
+          type: string
+          title: Model
+        num_parallel:
+          type: integer
+          title: Num Parallel
+        trace_count:
+          type: integer
+          title: Trace Count
+        eval_pass_rate:
+          type: number
+          title: Eval Pass Rate
+        total_latency_avg_s:
+          type: number
+          title: Total Latency Avg S
+        total_latency_p50_s:
+          type: number
+          title: Total Latency P50 S
+        total_latency_p95_s:
+          type: number
+          title: Total Latency P95 S
+      type: object
+      required:
+      - agent_name
+      - benchmark_name
+      - model
+      - num_parallel
+      - trace_count
+      - eval_pass_rate
+      - total_latency_avg_s
+      - total_latency_p50_s
+      - total_latency_p95_s
+      title: ReportAggregate
+      description: Per-group rollup for an experiment report.
+    ResourceQuantities:
+      properties:
+        cpu:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cpu
+        memory:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Memory
+      type: object
+      title: ResourceQuantities
+    RunArtifact:
+      properties:
+        name:
+          type: string
+          title: Name
+        format:
+          type: string
+          title: Format
+        key:
+          type: string
+          title: Key
+        url:
+          type: string
+          title: Url
+        size_bytes:
+          type: integer
+          title: Size Bytes
+      type: object
+      required:
+      - name
+      - format
+      - key
+      - url
+      - size_bytes
+      title: RunArtifact
+      description: 'A single S3 object exported for a completed run.
+
+
+        Surfaced in the run/report payload so a client can selectively fetch only
+        the file(s) it
+
+        needs (e.g. Parquet for analytics, NDJSON for streaming) instead of the full
+        inline records.'
+    RunReportResponse:
+      properties:
+        run_id:
+          type: string
+          title: Run Id
+        benchmark:
+          type: string
+          title: Benchmark
+        experiment:
+          type: string
+          title: Experiment
+        trace_count:
+          type: integer
+          title: Trace Count
+        records:
+          items:
+            $ref: '#/components/schemas/MLflowTraceRecord'
+          type: array
+          title: Records
+        artifacts:
+          items:
+            $ref: '#/components/schemas/RunArtifact'
+          type: array
+          title: Artifacts
+      type: object
+      required:
+      - run_id
+      - benchmark
+      - experiment
+      - trace_count
+      title: RunReportResponse
+    RunRequest:
+      properties:
+        agent:
+          type: string
+          title: Agent
+          default: tool_calling
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
+        namespace:
+          type: string
+          title: Namespace
+          default: team1
+        experiment:
+          type: string
+          title: Experiment
+          default: default
+        max_tasks:
+          type: integer
+          title: Max Tasks
+          default: 1
+        max_parallel_sessions:
+          type: integer
+          title: Max Parallel Sessions
+          default: 1
+        timeout_seconds:
+          type: number
+          title: Timeout Seconds
+          default: 300.0
+      type: object
+      title: RunRequest
+    RunState:
+      properties:
+        run_id:
+          type: string
+          title: Run Id
+        benchmark:
+          type: string
+          title: Benchmark
+        agent:
+          type: string
+          title: Agent
+        namespace:
+          type: string
+          title: Namespace
+        experiment:
+          type: string
+          title: Experiment
+        status:
+          $ref: '#/components/schemas/RunStatus'
+          default: pending
+        started_at:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Started At
+        finished_at:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Finished At
+        summary:
+          anyOf:
+          - $ref: '#/components/schemas/RunSummary'
+          - type: 'null'
+        results:
+          items:
+            $ref: '#/components/schemas/TaskResult'
+          type: array
+          title: Results
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+        artifacts_prefix:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Artifacts Prefix
+        artifacts:
+          items:
+            $ref: '#/components/schemas/RunArtifact'
+          type: array
+          title: Artifacts
+      type: object
+      required:
+      - run_id
+      - benchmark
+      - agent
+      - namespace
+      - experiment
+      title: RunState
+    RunStatus:
+      type: string
+      enum:
+      - pending
+      - running
+      - succeeded
+      - failed
+      title: RunStatus
+    RunSummary:
+      properties:
+        total:
+          type: integer
+          title: Total
+        succeeded:
+          type: integer
+          title: Succeeded
+        evaluated_pass:
+          type: integer
+          title: Evaluated Pass
+        pass_rate:
+          type: number
+          title: Pass Rate
+        wall_seconds:
+          type: number
+          title: Wall Seconds
+      type: object
+      required:
+      - total
+      - succeeded
+      - evaluated_pass
+      - pass_rate
+      - wall_seconds
+      title: RunSummary
+    S3Config:
+      properties:
+        endpoint_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Endpoint Url
+        bucket:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bucket
+        region:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Region
+        access_key_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Access Key Id
+        secret_access_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Secret Access Key
+        prefix:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Prefix
+        public_read:
+          type: boolean
+          title: Public Read
+          default: true
+      type: object
+      title: S3Config
+      description: 'Service-enacted object store for hosting benchmark-result artifacts.
+
+
+        Consumed by the Service itself (not the workload pods), so it is set/updated
+        via
+
+        the benchmarker-only config API rather than provisioned as a cluster Secret.'
+    SecretKeyRef:
+      properties:
+        name:
+          type: string
+          title: Name
+        key:
+          type: string
+          title: Key
+      type: object
+      required:
+      - name
+      - key
+      title: SecretKeyRef
+    ServicePort:
+      properties:
+        name:
+          type: string
+          title: Name
+          default: http
+        port:
+          type: integer
+          title: Port
+          default: 8080
+        target_port:
+          type: integer
+          title: Target Port
+          default: 8000
+        protocol:
+          type: string
+          title: Protocol
+          default: TCP
+      type: object
+      title: ServicePort
+    TaskResult:
+      properties:
+        task_id:
+          type: string
+          title: Task Id
+        session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Id
+        passed:
+          type: boolean
+          title: Passed
+          default: false
+        latency_seconds:
+          type: number
+          title: Latency Seconds
+          default: 0.0
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+      type: object
+      required:
+      - task_id
+      title: TaskResult
+    ToolCreateRequest:
+      properties:
+        name:
+          type: string
+          title: Name
+        namespace:
+          type: string
+          title: Namespace
+        container_image:
+          type: string
+          title: Container Image
+        image_tag:
+          type: string
+          title: Image Tag
+          default: ''
+        env_vars:
+          items:
+            $ref: '#/components/schemas/EnvVar'
+          type: array
+          title: Env Vars
+        service_ports:
+          items:
+            $ref: '#/components/schemas/ServicePort'
+          type: array
+          title: Service Ports
+        resources:
+          anyOf:
+          - $ref: '#/components/schemas/AgentResources'
+          - type: 'null'
+        image_pull_policy:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Image Pull Policy
+        protocol:
+          type: string
+          title: Protocol
+          default: mcp
+        framework:
+          type: string
+          title: Framework
+          default: custom
+        deployment_method:
+          type: string
+          title: Deployment Method
+          default: image
+        workload_type:
+          type: string
+          title: Workload Type
+          default: deployment
+        create_http_route:
+          type: boolean
+          title: Create Http Route
+          default: true
+      type: object
+      required:
+      - name
+      - namespace
+      - container_image
+      title: ToolCreateRequest
+      description: An MCP tool/benchmark-server workload deployed via Rossoctl POST
+        /api/v1/tools.
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Caller JWT. Used only for attribution (preferred_username) and
+        issuer-based routing (iss); never forwarded upstream — the Service mints its
+        own ROPC token for Rossoctl calls.
+security:
+- bearerAuth: []

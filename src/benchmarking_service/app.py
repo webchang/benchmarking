@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI
+from fastapi.openapi.utils import get_openapi
 
 from .auth.jwks import JWKSCache
 from .config import settings
@@ -47,7 +48,44 @@ def create_app() -> FastAPI:
     async def healthz() -> dict:
         return {"status": "ok"}
 
+    _install_openapi(app)
     return app
+
+
+def _install_openapi(app: FastAPI) -> None:
+    """Expose the caller-JWT bearer requirement in the OpenAPI doc.
+
+    Auth is enforced via the `require_caller_jwt` dependency rather than FastAPI's
+    security utilities, so it isn't inferred into the schema. Every documented endpoint
+    requires the token (only `/healthz` is public, and it's excluded from the schema), so
+    we declare a single `bearerAuth` scheme and apply it globally.
+    """
+
+    def custom_openapi() -> dict:
+        if app.openapi_schema:
+            return app.openapi_schema
+        schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            routes=app.routes,
+        )
+        schema.setdefault("components", {})["securitySchemes"] = {
+            "bearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT",
+                "description": (
+                    "Caller JWT. Used only for attribution (preferred_username) and "
+                    "issuer-based routing (iss); never forwarded upstream — the Service "
+                    "mints its own ROPC token for Rossoctl calls."
+                ),
+            }
+        }
+        schema["security"] = [{"bearerAuth": []}]
+        app.openapi_schema = schema
+        return schema
+
+    app.openapi = custom_openapi
 
 
 app = create_app()
