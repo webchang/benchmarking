@@ -21,7 +21,7 @@ from ..models import (
 )
 
 
-_LITELLM_BASE_URL = "https://litellm-litemaas.apps.prod.rhoai.rh-aiservices-bu.com/v1"
+_LITELLM_BASE_URL = "https://litemaas.rhoai.rh-aiservices-bu.com/v1"
 
 
 def _secret_env(name: str, secret: str, key: str) -> EnvVar:

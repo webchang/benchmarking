@@ -190,7 +190,7 @@ decisions = [
     ("Per-request ROPC login", "Fresh Service token every request — no expiry handling."),
     ("iss-keyed per-instance config", "One file per issuer: Rossoctl URL, benchmarker cred, MLflow/S3, optional Keycloak backchannel + workload route templates."),
     ("Enact only what HTTP allows", "Deploy/run/report/export; workload Secrets + AuthBridge layer-3 are out-of-band → prechecked/rejected, never silently ignored."),
-    ("MLflow per-service; S3 shared", "Service emits + reads its own MLflow traces; S3 is the cross-service analytics sink."),
+    ("MLflow with Service; S3 in the cloud", "MLflow is co-located with the Service (per-service traces it emits + reads), not in the workload cluster; S3 is an external cloud service — the shared cross-service sink."),
 ]
 y = inch(1.95)
 for head, body in decisions:
@@ -211,24 +211,32 @@ s = prs.slides.add_slide(BLANK)
 title_band(s, "Architecture", "Relations between client, service, cluster-specific Keycloak / Rossoctl / workload, MLflow & S3")
 
 # Client (off-cluster / host)
-box(s, inch(0.4), inch(1.5), inch(2.35), inch(1.15),
+box(s, inch(0.4), inch(1.30), inch(2.8), inch(0.85),
     "Benchmarking Client", CLIENT, CLIENT, font=13.5, font_color=WHITE,
     sub="off-cluster (host / CI)", sub_color=RGBColor(0xE6, 0xF0, 0xE6))
 
 # Service (center-left) — title anchored top, bullets below (no overlap)
-sv = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, inch(0.4), inch(3.3), inch(2.8), inch(2.35))
+sv = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, inch(0.4), inch(2.45), inch(2.8), inch(1.85))
 sv.fill.solid(); sv.fill.fore_color.rgb = BLUE; sv.line.color.rgb = BLUE; sv.shadow.inherit = False
 svtf = sv.text_frame; svtf.word_wrap = True; svtf.vertical_anchor = MSO_ANCHOR.TOP
 svtf.margin_left = Pt(8); svtf.margin_top = Pt(7)
 p = svtf.paragraphs[0]; p.alignment = PP_ALIGN.CENTER
 r = p.add_run(); r.text = "Benchmarking Service"; _set_font(r, 13.5, True, WHITE)
 for t in ("pure-Python · async", "iss-keyed InstanceRegistry", "per-request ROPC login",
-          "deploy / run / report", "MLflow emit+read · S3 export"):
+          "deploy / run / report"):
     pp = svtf.add_paragraph(); pp.alignment = PP_ALIGN.LEFT; pp.level = 1
     rr = pp.add_run(); rr.text = "• " + t; _set_font(rr, 10, False, WHITE)
 
+# MLflow + S3 sit on the SERVICE side, NOT inside the per-cluster workload instance:
+# MLflow is co-located with the Service (same cluster); S3 is an external cloud service.
+# S3 on the left, MLflow on the right (nearer the collector hop that feeds it).
+box(s, inch(0.4), inch(4.75), inch(1.35), inch(0.95), "S3", STORE, ACCENT,
+    font=13, font_color=WHITE, sub="cloud (external)", sub_color=LTGRAY)
+ml = box(s, inch(1.85), inch(4.75), inch(1.35), inch(0.95), "MLflow", STORE, STORE,
+         font=13, font_color=WHITE, sub="same cluster as Service", sub_color=LTGRAY)
+
 # Per-cluster instance container (dashed) — stacked shadow implies "many instances"
-CX, CY, CW, CH = inch(4.05), inch(1.2), inch(8.75), inch(4.55)
+CX, CY, CW, CH = inch(4.05), inch(1.2), inch(8.75), inch(4.35)
 for off, col in ((inch(0.22), RGBColor(0xDD, 0xDD, 0xDD)), (inch(0.11), RGBColor(0xCB, 0xCB, 0xCB))):
     sh = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, CX + off, CY + off, CW, CH)
     sh.fill.solid(); sh.fill.fore_color.rgb = col; sh.line.fill.background(); sh.shadow.inherit = False
@@ -247,9 +255,6 @@ kc = box(s, inch(4.35), inch(1.95), inch(2.55), inch(1.0),
 ro = box(s, inch(4.35), inch(3.2), inch(2.55), inch(1.1),
          "Rossoctl / Kagenti", ROSSO, ROSSO, font=13, font_color=WHITE,
          sub="backend API (server-side ops)", sub_color=LTPURPLE)
-ml = box(s, inch(4.35), inch(4.5), inch(2.55), inch(0.95),
-         "MLflow", STORE, STORE, font=13, font_color=WHITE,
-         sub="traces (per-service)", sub_color=LTGRAY)
 
 # Workload group
 wg = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, inch(9.15), inch(1.95), inch(3.45), inch(2.35))
@@ -262,42 +267,53 @@ box(s, inch(9.35), inch(2.42), inch(3.05), inch(0.8), "MCP tool", WORK, WORK,
 box(s, inch(9.35), inch(3.35), inch(3.05), inch(0.8), "A2A agent", WORK, WORK,
     font=12.5, font_color=WHITE, sub="exgentic-a2a-tool_calling-<b>", sub_color=LTTEAL)
 
-# S3 — shared sink (lower-right inside the frame)
-s3 = box(s, inch(9.15), inch(4.5), inch(3.45), inch(0.95), "S3", STORE, ACCENT,
-         font=13, font_color=WHITE, sub="shared cross-service sink", sub_color=LTGRAY)
+# OTEL collector — lives in the workload cluster; forwards the agent's own OTLP spans to MLflow
+# (the agent can't auth to MLflow directly). Optional / off by default (workload_otel).
+box(s, inch(6.7), inch(4.5), inch(2.7), inch(0.78), "OTEL collector", WORK, WORK,
+    font=12.5, font_color=WHITE, sub="forwards agent spans → MLflow", sub_color=LTTEAL)
 
 # ---- connectors (numbered) ----
 def dot(cx, cy, n):
-    d = s.shapes.add_shape(MSO_SHAPE.OVAL, int(cx) - inch(0.13), int(cy) - inch(0.13), inch(0.26), inch(0.26))
+    dia = 0.26 if len(str(n)) < 2 else 0.34  # widen for 2-digit numbers so they don't wrap
+    d = s.shapes.add_shape(MSO_SHAPE.OVAL, int(cx) - inch(dia / 2), int(cy) - inch(dia / 2), inch(dia), inch(dia))
     d.fill.solid(); d.fill.fore_color.rgb = ACCENT; d.line.color.rgb = WHITE; d.line.width = Pt(1)
     d.shadow.inherit = False
-    p = d.text_frame.paragraphs[0]; p.alignment = PP_ALIGN.CENTER
+    tf = d.text_frame; tf.word_wrap = False
+    tf.margin_left = 0; tf.margin_right = 0; tf.margin_top = 0; tf.margin_bottom = 0
+    p = tf.paragraphs[0]; p.alignment = PP_ALIGN.CENTER
     r = p.add_run(); r.text = str(n); _set_font(r, 10.5, True, WHITE)
 
 # 1 Client -> Keycloak (get caller JWT)
-connector(s, inch(2.77), inch(1.95), inch(4.35), inch(2.3))
-dot(inch(3.55), inch(2.02), 1)
+connector(s, inch(3.2), inch(1.7), inch(4.35), inch(2.25))
+dot(inch(3.72), inch(1.95), 1)
 # 2 Client -> Service (bearer)
-connector(s, inch(1.55), inch(2.65), inch(1.7), inch(3.3))
-dot(inch(1.35), inch(2.98), 2)
+connector(s, inch(1.8), inch(2.15), inch(1.8), inch(2.45))
+dot(inch(2.05), inch(2.30), 2)
 # 3 Service -> Keycloak (validate + mint token)
-connector(s, inch(3.2), inch(3.75), inch(4.35), inch(2.65))
-dot(inch(3.9), inch(3.1), 3)
+connector(s, inch(3.2), inch(2.75), inch(4.35), inch(2.6))
+dot(inch(3.78), inch(2.66), 3)
 # 4 Service -> Rossoctl
-connector(s, inch(3.2), inch(4.2), inch(4.35), inch(3.8))
-dot(inch(3.85), inch(3.9), 4)
+connector(s, inch(3.2), inch(3.55), inch(4.35), inch(3.65))
+dot(inch(3.78), inch(3.58), 4)
 # 5 Rossoctl -> Workload (deploys)
 connector(s, inch(6.9), inch(3.45), inch(9.15), inch(2.9), color=ROSSO)
 dot(inch(8.0), inch(3.1), 5)
 # 6 Service -> Workload (run sessions) — long arrow across
-connector(s, inch(3.2), inch(4.85), inch(9.35), inch(3.7), color=WORK)
-dot(inch(6.3), inch(4.24), 6)
-# 7 Service -> MLflow
-connector(s, inch(3.2), inch(5.25), inch(4.35), inch(4.95), color=STORE)
-dot(inch(3.9), inch(5.05), 7)
-# 8 Service -> S3
-connector(s, inch(3.2), inch(5.5), inch(9.15), inch(4.95), color=ACCENT)
-dot(inch(6.3), inch(5.2), 8)
+connector(s, inch(3.2), inch(4.1), inch(9.15), inch(3.7), color=WORK)
+dot(inch(7.7), inch(3.8), 6)
+# 7 Service -> MLflow: EMIT the Agent.Session trace (establishes it first, before the workload spans)
+connector(s, inch(2.15), inch(4.30), inch(2.15), inch(4.75), color=STORE)
+dot(inch(2.15), inch(4.52), 7)
+# 8 A2A agent -> OTEL collector -> MLflow (optional workload spans; nest under 7; off by default)
+connector(s, inch(9.5), inch(4.15), inch(9.05), inch(4.5), color=WORK)
+connector(s, inch(6.7), inch(4.92), inch(3.2), inch(5.12), color=STORE, dashed=True)
+dot(inch(4.7), inch(5.0), 8)
+# 9 MLflow -> Service: READ back the Agent.Session traces (after the workload spans have landed)
+connector(s, inch(2.9), inch(4.75), inch(2.9), inch(4.30), color=STORE)
+dot(inch(2.9), inch(4.52), 9)
+# 10 Service -> S3 (export) — terminal, after run completion
+connector(s, inch(1.1), inch(4.30), inch(1.1), inch(4.75), color=ACCENT)
+dot(inch(0.88), inch(4.52), 10)
 
 # Legend — two-column panel below the frame
 legend_l = [
@@ -306,13 +322,14 @@ legend_l = [
     "3  Service validates JWT (JWKS) + mints its own",
     "      benchmarker token (ROPC, via backchannel)",
     "4  Service → Rossoctl: deploy / list agents + tools",
+    "5  Rossoctl creates the MCP tool + A2A agent in-cluster",
 ]
 legend_r = [
-    "5  Rossoctl creates the MCP tool + A2A agent in-cluster",
     "6  Service runs benchmark sessions directly (MCP / A2A)",
-    "7  Service emits + reads Agent.Session traces (MLflow)",
-    "8  Service exports run.json / report.ndjson /",
-    "      report.parquet (S3)",
+    "7  Service emits the Agent.Session trace → MLflow (first)",
+    "8  A2A agent → OTEL collector → MLflow (optional; off by default)",
+    "9  Service reads back Agent.Session traces (MLflow)",
+    "10  Service exports run.json / report.* (S3)",
 ]
 lb = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, inch(0.4), inch(5.9), inch(12.5), inch(1.45))
 lb.fill.solid(); lb.fill.fore_color.rgb = RGBColor(0xF4, 0xF6, 0xF8); lb.line.color.rgb = BORDER

@@ -240,6 +240,11 @@ same LiteLLM base and `openai-secret/apikey` gsm8k's agent uses, and carries
 tau*). Note: multi-turn sessions can exceed the default 300s `RunRequest.timeout_seconds`; pass a
 larger value for tau2 runs.
 
+> **Adding or changing a benchmark** is a source change to `BENCHMARKS` + tests + image rebuild +
+> redeploy (the catalog is static code, read-only over HTTP — never runtime-mutable). For the
+> field-by-field reference and the add/change recipe, see the co-located contributor note
+> `src/benchmarking_service/benchmarks/README.md` and `docs/DEVELOPER_GUIDE.md` §8.
+
 #### Comparing runs across clusters (e.g. kind vs a remote workload cluster)
 
 When the same benchmark is run on two matrices, the artifact *set and schema are identical*
@@ -329,6 +334,15 @@ the Service can actually enact are accepted — `ConfigUpdateRequest` sets `extr
 attempt to smuggle a workload-provided key (e.g. `hf-secret`) through the config API is rejected as
 **422**. This is the concrete guard enforcing the A/B split at the API boundary.
 
+**Topology (where these live).** Both sit on the **Service side**, not inside the per-`iss`
+workload cluster: **MLflow is co-located with the Service** (same cluster) — the Service reaches it
+in-cluster, or over a Route for cross-cluster reads — so it is a *Service-side* dependency, not part
+of the per-cluster instance (Keycloak / Rossoctl / workload) the `iss` selects. **S3 is an external
+cloud service** (not cluster-bound at all), which is exactly why it can serve as the cross-service
+aggregation sink below. The only workload-cluster component in the reporting path is the optional
+OTEL collector (`workload_otel`, below), which forwards the agent's own spans *out* to the
+Service-side MLflow.
+
 - **Benchmarker-only.** `GET`/`PUT /config` both gate on `require_benchmarker`.
 - **File default + runtime override.** The per-instance file (`InstanceConfig.mlflow`/`.s3`) is the
   default; `PUT /config` overlays a per-`iss` in-memory override (`RuntimeConfigStore`,
@@ -385,8 +399,10 @@ endpoints (both the read client and the OTLP exporter session).
 
 **Getting the agent's own LLM/tool spans (optional `workload_otel`).** The exgentic agent's OTLP
 exporter supports only endpoint/protocol/insecure — it cannot set the auth headers an authenticated
-MLflow requires — so it can't post directly to MLflow. The upstream pattern is agent → an in-cluster
-otel-collector (no auth) → MLflow (headers added by the collector). To wire the agent at deploy time,
+MLflow requires — so it can't post directly to MLflow. The upstream pattern is agent → an
+otel-collector in the workload cluster (no auth) → MLflow (headers added by the collector); since
+MLflow is co-located with the Service (not the workload), this final collector→MLflow leg crosses
+clusters. To wire the agent at deploy time,
 set `workload_otel` in the instance file (`enabled`, `endpoint`, `protocol`, `insecure`,
 `service_name`, `resource_attributes`); `build_agent_request` then injects `EXGENTIC_OTEL_ENABLED` +
 `OTEL_EXPORTER_OTLP_*` onto the agent pod. This is opt-in and off by default (no OTEL env injected

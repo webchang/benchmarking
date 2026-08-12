@@ -452,3 +452,65 @@ cluster-default pipeline).
 **appworld:** registers and deploys correctly via the Service, but its MCP image hangs on its
 own per-task Venv-service health timeout (120s), independent of the Service. Treat appworld as
 externally blocked until that image is fixed.
+
+---
+
+## 8. Extending the catalog (adding or changing a benchmark)
+
+The benchmark catalog is **code, not runtime data** — a static `BENCHMARKS` dict in
+[`src/benchmarking_service/benchmarks/registry.py`](../src/benchmarking_service/benchmarks/registry.py).
+There is no database, config file, or admin API behind it, and the HTTP surface over the
+catalog is **read-only** (`GET /benchmarks`, `GET /benchmarks/{name}`). Adding or changing a
+benchmark is therefore a **source change + tests + image rebuild + redeploy**, deliberately: the
+definition pins container images, dataset env, and resource limits that must move in lockstep
+with the workload images, so every change is a reviewable, git-tracked, image-versioned artifact
+rather than mutable state that could drift per instance.
+
+> See the co-located contributor note
+> [`src/benchmarking_service/benchmarks/README.md`](../src/benchmarking_service/benchmarks/README.md)
+> for the field-by-field reference and the per-benchmark env gotchas.
+
+### 8.1 What a definition holds
+
+Each entry is a `BenchmarkDefinition`: `name`, `mcp_image` (+ `mcp_image_tag`/`mcp_port`/
+`mcp_path`), `tool_env`, `tool_resources`, `default_model`, `user_simulator` (multi-turn flag),
+and an `agents` map of `BenchmarkAgentSpec` (per-agent `container_image` + `extra_env` +
+`resources`). Secret references are declared with the `_secret_env(env, secret, key)` helper;
+`required_secrets()` derives the actionable `424` precheck message from them automatically.
+
+### 8.2 Add a new benchmark
+
+1. **Add a `BenchmarkDefinition` entry** to `BENCHMARKS` in `registry.py`:
+   - `mcp_image` (+ tag/port/path) — the MCP tool image.
+   - `tool_env` — `BENCHMARK_NAME`, the LiteLLM base URL, and any secret refs via `_secret_env`.
+   - `agents={...}` — one `BenchmarkAgentSpec` per flavor. The `tool_calling` A2A image is shared
+     across all current benchmarks; usually you reuse it and only the name gets a `-<benchmark>`
+     suffix.
+   - `user_simulator=True` **only** for multi-turn benchmarks — this is what makes
+     `build_tool_request` inject `EXGENTIC_SET_BENCHMARK_USER_SIMULATOR_MODEL` into the MCP pod so
+     the server-side simulator shares the run's model.
+   - Any benchmark-quirk env — mind the documented gotchas: gsm8k needs
+     `EXGENTIC_SET_BENCHMARK_RUNNER=direct`; tau2 needs
+     `EXGENTIC_SET_BENCHMARK_ACTION_TIMEOUT=1000`; appworld **rejects** that same action-timeout
+     override and crashes at startup if it's present.
+2. **Add tests** in `tests/test_benchmarks.py` — assert `build_tool_request` /
+   `build_agent_request` emit the expected images, env, secrets, and resources, mirroring the
+   existing patterns.
+3. **Rebuild + bump the image tag**, redeploy the Service. The new benchmark then appears in
+   `GET /benchmarks` and is deployable/runnable at `/benchmarks/<newname>/…` with **no client
+   change** — the request bodies are benchmark-agnostic (see §5).
+
+### 8.3 Change an existing benchmark
+
+Same mechanism — edit the entry (bump `mcp_image_tag`, change `default_model`, add an env var,
+adjust `tool_resources`), update tests, rebuild, redeploy. Because `required_secrets()` is
+derived from `tool_env` + the chosen agent's `extra_env`, changing a secret reference
+automatically updates the `424` "this benchmark requires secret(s): …" precheck message — no
+separate wiring.
+
+### 8.4 What stays runtime-mutable (for contrast)
+
+Per-instance state is *not* in the catalog and does not require a rebuild: instance config
+(files under `settings.instances_dir`, keyed by `iss`) and the benchmarker-only `PUT /config`
+overrides (MLflow read creds + S3). The benchmark catalog is intentionally the immutable,
+version-pinned part.
