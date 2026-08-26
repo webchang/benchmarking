@@ -85,6 +85,7 @@ async def run_benchmark(
     *,
     max_tasks: int | None = None,
     max_parallel: int = 1,
+    task_timeout: float | None = None,
     tracer=None,
     flush=None,
     meta: dict | None = None,
@@ -100,8 +101,25 @@ async def run_benchmark(
         append_lock = asyncio.Lock()
 
         async def _one(task_id: str) -> None:
+            # Bound the whole task (create_session + agent call + evaluate) so one stalled
+            # task — whether the MCP call or the slow A2A agent turn hangs — fails on its
+            # own and the batch keeps its other results, instead of the run's wall-timeout
+            # cancelling the whole gather and discarding everything (tau2's failure mode).
             async with sem:
-                result = await _run_task(task_id, mcp, a2a, tracer, meta)
+                try:
+                    if task_timeout is not None and task_timeout > 0:
+                        async with asyncio.timeout(task_timeout):
+                            result = await _run_task(task_id, mcp, a2a, tracer, meta)
+                    else:
+                        result = await _run_task(task_id, mcp, a2a, tracer, meta)
+                except (TimeoutError, asyncio.TimeoutError):
+                    result = TaskResult(
+                        task_id=task_id,
+                        session_id=None,
+                        passed=False,
+                        latency_seconds=float(task_timeout or 0.0),
+                        error=f"task exceeded per-task timeout of {task_timeout:g}s",
+                    )
             async with append_lock:
                 results.append(result)
 
