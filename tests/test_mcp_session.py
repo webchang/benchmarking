@@ -166,3 +166,19 @@ async def test_uncancellable_call_poisons_session_and_fails_fast():
     with pytest.raises(McpCallTimeout, match="poisoned"):
         await sess._call("create_session", {"task_id": "t2"})
     assert sess._session.calls == 1
+
+
+async def test_external_cancel_midcall_poisons_session():
+    # The engine's per-task timeout cancels the task *while* an MCP call is in flight (its
+    # own call_timeout is longer). The child call is left on the shared session's streams,
+    # so the session must be poisoned — a later concurrent call_tool would corrupt it.
+    sess = McpEvalSession("http://mcp", call_timeout=30, reap_grace=0.1)
+    sess._session = _StubbornSession(life=1.0)
+    with pytest.raises((TimeoutError, asyncio.CancelledError)):
+        async with asyncio.timeout(0.2):  # outer per-task deadline, well below call_timeout
+            await sess._call("create_session", {"task_id": "t1"})
+    assert sess._poisoned is True
+    assert not sess._lock.locked()  # lock released on the way out despite the cancel
+    with pytest.raises(McpCallTimeout, match="poisoned"):
+        await sess._call("create_session", {"task_id": "t2"})
+    assert sess._session.calls == 1

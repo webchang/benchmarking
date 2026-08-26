@@ -118,6 +118,26 @@ async def _execute(
         run.finished_at = time.time()
         logger.exception("benchmark run %s failed", run.run_id)
     finally:
+        # Absolute backstop: a run must NEVER be left non-terminal, however _execute exits.
+        # `except Exception` above misses BaseException — notably a CancelledError bubbling
+        # up out of the run body (a corrupted shared MCP session can propagate an anyio
+        # cancellation through asyncio.gather; inner.result() then re-raises it). Without
+        # this the run would orphan in "running" forever with on_complete having already
+        # exported a non-terminal snapshot. Mark it failed here (before on_complete) and let
+        # any BaseException keep propagating — this sets state, it does not swallow the error.
+        if run.status not in (RunStatus.succeeded, RunStatus.failed):
+            run.status = RunStatus.failed
+            run.finished_at = time.time()
+            if not run.error:
+                done = len(run.results)
+                run.error = (
+                    f"run was interrupted before completing "
+                    f"({done} task(s) recorded before it stopped; partial results retained)"
+                )
+            logger.warning(
+                "benchmark run %s ended non-terminal; marked failed (%d tasks recorded)",
+                run.run_id, len(run.results),
+            )
         if on_complete is not None:
             try:
                 await on_complete(run)

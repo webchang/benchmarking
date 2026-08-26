@@ -156,9 +156,22 @@ class McpEvalSession:
         and the lock is released. If the cancelled call cannot be reaped, the orphan is
         still live on the session streams, so we poison the session (later calls fail
         fast) rather than let a concurrent call_tool corrupt it.
+
+        The engine also wraps the whole task in its own (usually shorter) timeout. When
+        that fires it cancels us *from outside* while we await below — leaving the child
+        call in flight on the shared session. We cannot start a later task's call_tool on
+        that session without corrupting it, so we poison on external cancellation too.
         """
         call = asyncio.create_task(self._session.call_tool(tool, arguments=arguments))
-        done, _pending = await asyncio.wait({call}, timeout=self._call_timeout)
+        try:
+            done, _pending = await asyncio.wait({call}, timeout=self._call_timeout)
+        except asyncio.CancelledError:
+            # Cancelled from outside (the engine's per-task deadline) mid-call. The child
+            # is still on the shared session's streams and cannot be safely reaped under
+            # our own cancellation, so poison the session and let this task's error stand.
+            call.cancel()
+            self._poison("cancelled mid-call by the per-task timeout")
+            raise
         if call in done:
             return call.result()
 
@@ -167,11 +180,19 @@ class McpEvalSession:
         # reader that ignores cancellation cannot pin us here re-awaiting the task.
         done, _pending = await asyncio.wait({call}, timeout=self._reap_grace)
         if call not in done:
-            self._poisoned = True  # orphan still live; the shared session is unsafe now
+            self._poison("call exceeded its deadline and could not be reaped")
         raise McpCallTimeout(
             f"MCP call {tool!r} to {self._url} exceeded {self._call_timeout:g}s "
             "(tool pod stalled?)"
         )
+
+    def _poison(self, why: str) -> None:
+        if not self._poisoned:
+            logger.warning(
+                "MCP session to %s poisoned (%s); remaining calls will fail fast",
+                self._url, why,
+            )
+        self._poisoned = True
 
     async def _call(self, tool: str, arguments: dict) -> dict:
         # The per-call deadline is INSIDE the lock so a stuck call fails and releases the

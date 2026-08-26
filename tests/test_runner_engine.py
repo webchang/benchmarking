@@ -189,6 +189,47 @@ async def test_run_benchmark_partial_results_survive_cancellation():
     assert [r.task_id for r in run.results] == ["t1", "t2"]
 
 
+async def test_run_benchmark_task_cancellederror_does_not_abandon_batch():
+    # A corrupted shared MCP session (concurrent call_tool on one session under p>1) can
+    # propagate a CancelledError up through the SDK on ONE task. The engine's per-task
+    # guard catches TimeoutError, not BaseException, so that CancelledError used to
+    # re-raise out of asyncio.gather, past the succeeded line, and orphan the run in
+    # "running". The batch must instead complete: the offending task is booked errored and
+    # every other task keeps its result (serial parity).
+    class CancelOnOne(FakeMcp):
+        async def create_session(self, task_id):
+            if task_id == "t2":
+                raise asyncio.CancelledError("shared session corrupted")
+            return await super().create_session(task_id)
+
+    run = _run_state()
+    mcp = CancelOnOne(["t1", "t2", "t3", "t4"])
+    result = await engine.run_benchmark(run, mcp, FakeA2A(), max_parallel=4, task_timeout=5.0)
+
+    assert result.status is RunStatus.succeeded
+    assert run.finished_at is not None
+    by_task = {r.task_id: r for r in run.results}
+    assert set(by_task) == {"t1", "t2", "t3", "t4"}  # every task accounted for
+    assert by_task["t2"].passed is False and "aborted" in by_task["t2"].error
+    assert by_task["t1"].error is None and by_task["t3"].error is None
+
+
+async def test_run_benchmark_external_cancel_still_propagates():
+    # The engine hardening (return_exceptions=True) must NOT swallow a genuine cancellation
+    # of the whole run — the outer wall-timeout relies on being able to cancel the batch.
+    mcp = FakeMcp(["t1", "t2"])
+
+    class Slow(FakeA2A):
+        async def send_prompt(self, prompt, session_id=None):
+            await asyncio.sleep(30)
+
+    task = asyncio.create_task(engine.run_benchmark(_run_state(), mcp, Slow(), max_parallel=2))
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
 async def test_run_benchmark_no_task_timeout_by_default():
     # task_timeout=None keeps the original unbounded behavior (slow task still completes).
     mcp = FakeMcp(["t1"])
