@@ -115,6 +115,89 @@ async def test_run_benchmark_agent_error_is_captured_not_fatal():
     assert sorted(mcp.deleted) == ["sess-t1", "sess-t2"]
 
 
+async def test_run_benchmark_mcp_call_timeout_fails_only_that_task():
+    # A per-call MCP timeout on one task must fail *that* task and preserve the rest,
+    # not poison the whole batch — the reason the per-call timeout exists.
+    from benchmarking_service.runner.mcp_session import McpCallTimeout
+
+    class TimeoutOnMcp(FakeMcp):
+        async def create_session(self, task_id):
+            if task_id == "t2":
+                raise McpCallTimeout("MCP call 'create_session' exceeded 120s")
+            return await super().create_session(task_id)
+
+    mcp = TimeoutOnMcp(["t1", "t2", "t3"])
+    run = await engine.run_benchmark(_run_state(), mcp, FakeA2A(), max_parallel=2)
+
+    assert run.status is RunStatus.succeeded  # batch completed despite one stall
+    by_task = {r.task_id: r for r in run.results}
+    assert "exceeded" in by_task["t2"].error
+    assert by_task["t2"].passed is False
+    assert by_task["t1"].error is None and by_task["t3"].error is None
+    assert run.summary.succeeded == 2  # t1 + t3 preserved
+
+
+async def test_run_benchmark_per_task_timeout_fails_only_that_task():
+    # A task that stalls past task_timeout (here the agent call) fails individually and
+    # the batch keeps the others — the fix for tau2's whole-batch loss on one hang.
+    mcp = FakeMcp(["t1", "t2", "t3"])
+
+    class SlowOnOne(FakeA2A):
+        async def send_prompt(self, prompt, session_id=None):
+            if session_id == "sess-t2":
+                await asyncio.sleep(5)  # >> task_timeout
+            return await super().send_prompt(prompt, session_id=session_id)
+
+    run = await engine.run_benchmark(
+        _run_state(), mcp, SlowOnOne(), max_parallel=3, task_timeout=0.2
+    )
+
+    assert run.status is RunStatus.succeeded
+    by_task = {r.task_id: r for r in run.results}
+    assert "per-task timeout" in by_task["t2"].error
+    assert by_task["t2"].passed is False
+    assert by_task["t1"].error is None and by_task["t3"].error is None
+    assert run.summary.total == 3 and run.summary.succeeded == 2
+
+
+async def test_run_benchmark_partial_results_survive_cancellation():
+    # When the outer wall-timeout cancels the run mid-batch, the tasks that already
+    # finished must remain on run.results/run.summary (not be discarded). Models the
+    # _execute timeout path: cancel the run_benchmark task, then read run.
+    run = _run_state()
+    mcp = FakeMcp(["t1", "t2", "t3", "t4"])
+
+    class SlowTail(FakeA2A):
+        async def send_prompt(self, prompt, session_id=None):
+            if session_id in ("sess-t3", "sess-t4"):
+                await asyncio.sleep(30)  # never finishes before we cancel
+            return await super().send_prompt(prompt, session_id=session_id)
+
+    # Serial so t1,t2 finish, then t3 blocks; cancel while blocked.
+    task = asyncio.create_task(
+        engine.run_benchmark(run, mcp, SlowTail(), max_parallel=1)
+    )
+    await asyncio.sleep(0.2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # The two completed tasks are preserved with a real (partial) summary.
+    assert run.summary is not None
+    assert run.summary.total == 2
+    assert run.summary.evaluated_pass == 2
+    assert [r.task_id for r in run.results] == ["t1", "t2"]
+
+
+async def test_run_benchmark_no_task_timeout_by_default():
+    # task_timeout=None keeps the original unbounded behavior (slow task still completes).
+    mcp = FakeMcp(["t1"])
+    a2a = FakeA2A(delay=0.05)
+    run = await engine.run_benchmark(_run_state(), mcp, a2a, task_timeout=None)
+    assert run.summary.succeeded == 1
+    assert run.results[0].error is None
+
+
 async def test_run_benchmark_max_tasks_slices():
     mcp = FakeMcp(["t0", "t1", "t2", "t3", "t4"])
     run = await engine.run_benchmark(_run_state(), mcp, FakeA2A(), max_tasks=2, max_parallel=2)

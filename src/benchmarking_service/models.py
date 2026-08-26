@@ -346,6 +346,9 @@ class RunRequest(BaseModel):
     max_tasks: int = 1
     max_parallel_sessions: int = 1
     timeout_seconds: float = 300.0
+    # Per-task ceiling (create_session + agent call + evaluate). None → default cap,
+    # bounded by timeout_seconds. Keeps one stalled task from consuming the whole budget.
+    task_timeout_seconds: float | None = None
 
 
 class TaskResult(BaseModel):

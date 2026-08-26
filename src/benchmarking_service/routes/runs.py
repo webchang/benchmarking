@@ -25,11 +25,21 @@ from ..runner.tracing import build_tracer
 router = APIRouter(prefix="/benchmarks", tags=["runs"])
 logger = logging.getLogger(__name__)
 
+# Upper bound for any single MCP tool call, capped further by the run's own budget in
+# _build_clients. Keeps one stalled call from consuming the whole-run wall-timeout.
+_MCP_CALL_TIMEOUT = 120.0
+
+# Default per-task ceiling (whole task: create_session + agent call + evaluate), used
+# when a run does not set task_timeout_seconds. Always capped by the run budget below.
+_TASK_TIMEOUT = 300.0
+
 
 def _build_clients(mcp_url: str, agent_url: str, token: str | None, timeout: float):
     """Seam for the live MCP/A2A wire clients; monkeypatched with fakes in tests."""
+    # Bound each MCP call below the whole-run budget so a single stalled call fails its
+    # own task instead of letting the run's outer wall-timeout kill the entire batch.
     return (
-        McpEvalSession(mcp_url, token=token),
+        McpEvalSession(mcp_url, token=token, call_timeout=min(_MCP_CALL_TIMEOUT, timeout)),
         A2AAgentClient(agent_url, token=token, timeout=timeout),
     )
 
@@ -48,6 +58,8 @@ async def _execute(
     run.status = RunStatus.running
     run.started_at = time.time()
 
+    task_timeout = min(req.task_timeout_seconds or _TASK_TIMEOUT, req.timeout_seconds)
+
     async def _go() -> None:
         mcp_client, a2a_client = _build_clients(mcp_url, agent_url, token, req.timeout_seconds)
         async with mcp_client as mcp:
@@ -57,6 +69,7 @@ async def _execute(
                 a2a_client,
                 max_tasks=req.max_tasks,
                 max_parallel=req.max_parallel_sessions,
+                task_timeout=task_timeout,
                 tracer=tracer,
                 flush=flush,
                 meta=meta,
@@ -72,9 +85,18 @@ async def _execute(
     except asyncio.TimeoutError:
         inner.cancel()  # best-effort; do not await a possibly un-cancellable task
         run.status = RunStatus.failed
-        run.error = f"run exceeded timeout of {req.timeout_seconds:g}s (MCP/agent unreachable?)"
+        # The engine accumulates into run.results/run.summary live, so whatever finished
+        # before the deadline is preserved rather than discarded with the whole batch.
+        done = len(run.results)
+        run.error = (
+            f"run exceeded timeout of {req.timeout_seconds:g}s "
+            f"({done} task(s) completed before the deadline; partial results retained)"
+        )
         run.finished_at = time.time()
-        logger.warning("benchmark run %s timed out after %ss", run.run_id, req.timeout_seconds)
+        logger.warning(
+            "benchmark run %s timed out after %ss (%d tasks completed)",
+            run.run_id, req.timeout_seconds, done,
+        )
     except Exception as exc:  # noqa: BLE001 - the background task must never raise out
         run.status = RunStatus.failed
         run.error = str(exc)

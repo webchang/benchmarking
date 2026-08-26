@@ -3,7 +3,17 @@ import time
 
 import pytest
 
-from benchmarking_service.runner.mcp_session import McpConnectError, McpEvalSession
+from benchmarking_service.runner.mcp_session import (
+    McpCallTimeout,
+    McpConnectError,
+    McpEvalSession,
+)
+
+
+class _FakeResult:
+    def __init__(self, text):
+        self.content = [type("C", (), {"text": text})()]
+        self.isError = False
 
 
 class _FakeCtx:
@@ -72,3 +82,42 @@ async def test_teardown_bounds_a_hung_transport_close(monkeypatch):
         await sess.__aenter__()
     assert time.monotonic() - t0 < 5.0
     assert sess._http_ctx is None
+
+
+class _HangingSession:
+    """A ClientSession whose call_tool never returns — models a stalled tool pod."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def call_tool(self, tool, arguments=None):
+        self.calls += 1
+        await asyncio.sleep(30)
+
+
+class _FastSession:
+    async def call_tool(self, tool, arguments=None):
+        return _FakeResult('{"tasks": ["t1"]}')
+
+
+async def test_call_timeout_raises_bounded():
+    # A stuck call fails its own task fast instead of hanging on the untimed await.
+    sess = McpEvalSession("http://mcp", call_timeout=0.2)
+    sess._session = _HangingSession()
+    t0 = time.monotonic()
+    with pytest.raises(McpCallTimeout, match="exceeded"):
+        await sess._call("list_tasks", {})
+    assert time.monotonic() - t0 < 5.0
+
+
+async def test_call_timeout_releases_the_shared_lock():
+    # After a stuck call times out the session lock must be free, so other concurrent
+    # tasks are not wedged behind the one that stalled.
+    sess = McpEvalSession("http://mcp", call_timeout=0.2)
+    sess._session = _HangingSession()
+    with pytest.raises(McpCallTimeout):
+        await sess._call("create_session", {"task_id": "t1"})
+    assert not sess._lock.locked()
+    # A subsequent call on a now-healthy session proceeds normally.
+    sess._session = _FastSession()
+    assert await sess.list_tasks() == ["t1"]
