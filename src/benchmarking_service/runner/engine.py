@@ -91,13 +91,30 @@ async def run_benchmark(
     meta: dict | None = None,
 ) -> RunState:
     started = time.monotonic()
+    # run.results is the live accumulator (not a local list assigned only at the end):
+    # each completed task is visible immediately and — crucially — survives if the run's
+    # outer wall-timeout cancels this coroutine, so a timed-out run still reports the
+    # tasks that finished instead of discarding the whole batch.
+    run.results = []
+    results = run.results
+
+    def _publish_summary() -> None:
+        total = len(results)
+        evaluated_pass = sum(1 for r in results if r.passed)
+        run.summary = RunSummary(
+            total=total,
+            succeeded=sum(1 for r in results if r.error is None),
+            evaluated_pass=evaluated_pass,
+            pass_rate=(evaluated_pass / total) if total else 0.0,
+            wall_seconds=time.monotonic() - started,
+        )
+
     try:
         task_ids = await mcp.list_tasks()
         if max_tasks is not None and max_tasks > 0:
             task_ids = task_ids[:max_tasks]
 
         sem = asyncio.Semaphore(max(1, max_parallel))
-        results: list[TaskResult] = []
         append_lock = asyncio.Lock()
 
         async def _one(task_id: str) -> None:
@@ -122,20 +139,11 @@ async def run_benchmark(
                     )
             async with append_lock:
                 results.append(result)
+                _publish_summary()  # keep run.summary current so a timeout salvages partials
 
         await asyncio.gather(*(_one(t) for t in task_ids))
 
-        run.results = results
-        total = len(results)
-        succeeded = sum(1 for r in results if r.error is None)
-        evaluated_pass = sum(1 for r in results if r.passed)
-        run.summary = RunSummary(
-            total=total,
-            succeeded=succeeded,
-            evaluated_pass=evaluated_pass,
-            pass_rate=(evaluated_pass / total) if total else 0.0,
-            wall_seconds=time.monotonic() - started,
-        )
+        _publish_summary()
         run.status = RunStatus.succeeded
         run.finished_at = time.time()
         return run

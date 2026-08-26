@@ -85,9 +85,18 @@ async def _execute(
     except asyncio.TimeoutError:
         inner.cancel()  # best-effort; do not await a possibly un-cancellable task
         run.status = RunStatus.failed
-        run.error = f"run exceeded timeout of {req.timeout_seconds:g}s (MCP/agent unreachable?)"
+        # The engine accumulates into run.results/run.summary live, so whatever finished
+        # before the deadline is preserved rather than discarded with the whole batch.
+        done = len(run.results)
+        run.error = (
+            f"run exceeded timeout of {req.timeout_seconds:g}s "
+            f"({done} task(s) completed before the deadline; partial results retained)"
+        )
         run.finished_at = time.time()
-        logger.warning("benchmark run %s timed out after %ss", run.run_id, req.timeout_seconds)
+        logger.warning(
+            "benchmark run %s timed out after %ss (%d tasks completed)",
+            run.run_id, req.timeout_seconds, done,
+        )
     except Exception as exc:  # noqa: BLE001 - the background task must never raise out
         run.status = RunStatus.failed
         run.error = str(exc)

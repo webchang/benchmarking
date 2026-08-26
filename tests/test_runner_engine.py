@@ -160,6 +160,35 @@ async def test_run_benchmark_per_task_timeout_fails_only_that_task():
     assert run.summary.total == 3 and run.summary.succeeded == 2
 
 
+async def test_run_benchmark_partial_results_survive_cancellation():
+    # When the outer wall-timeout cancels the run mid-batch, the tasks that already
+    # finished must remain on run.results/run.summary (not be discarded). Models the
+    # _execute timeout path: cancel the run_benchmark task, then read run.
+    run = _run_state()
+    mcp = FakeMcp(["t1", "t2", "t3", "t4"])
+
+    class SlowTail(FakeA2A):
+        async def send_prompt(self, prompt, session_id=None):
+            if session_id in ("sess-t3", "sess-t4"):
+                await asyncio.sleep(30)  # never finishes before we cancel
+            return await super().send_prompt(prompt, session_id=session_id)
+
+    # Serial so t1,t2 finish, then t3 blocks; cancel while blocked.
+    task = asyncio.create_task(
+        engine.run_benchmark(run, mcp, SlowTail(), max_parallel=1)
+    )
+    await asyncio.sleep(0.2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # The two completed tasks are preserved with a real (partial) summary.
+    assert run.summary is not None
+    assert run.summary.total == 2
+    assert run.summary.evaluated_pass == 2
+    assert [r.task_id for r in run.results] == ["t1", "t2"]
+
+
 async def test_run_benchmark_no_task_timeout_by_default():
     # task_timeout=None keeps the original unbounded behavior (slow task still completes).
     mcp = FakeMcp(["t1"])
