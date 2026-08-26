@@ -119,7 +119,7 @@ def test_start_run_dials_templated_endpoints(tmp_path, make_token, jwks_doc, mon
 
     captured: dict = {}
 
-    def _capture(mcp_url, agent_url, token, timeout):
+    def _capture(mcp_url, agent_url, token, timeout, a2a_timeout=None):
         captured["mcp_url"] = mcp_url
         captured["agent_url"] = agent_url
         return (_FakeMcp(), _FakeA2A())

@@ -34,13 +34,22 @@ _MCP_CALL_TIMEOUT = 120.0
 _TASK_TIMEOUT = 300.0
 
 
-def _build_clients(mcp_url: str, agent_url: str, token: str | None, timeout: float):
+def _build_clients(
+    mcp_url: str,
+    agent_url: str,
+    token: str | None,
+    timeout: float,
+    a2a_timeout: float | None = None,
+):
     """Seam for the live MCP/A2A wire clients; monkeypatched with fakes in tests."""
     # Bound each MCP call below the whole-run budget so a single stalled call fails its
     # own task instead of letting the run's outer wall-timeout kill the entire batch.
+    # Give the A2A client the per-task budget as its own hard deadline: the a2a-sdk
+    # stream does not reliably tear down on cancellation, so the client must self-enforce
+    # (else a stalled agent turn wedges the batch at parallelism > 1 — tau2 #10).
     return (
         McpEvalSession(mcp_url, token=token, call_timeout=min(_MCP_CALL_TIMEOUT, timeout)),
-        A2AAgentClient(agent_url, token=token, timeout=timeout),
+        A2AAgentClient(agent_url, token=token, timeout=(a2a_timeout or timeout)),
     )
 
 
@@ -61,7 +70,9 @@ async def _execute(
     task_timeout = min(req.task_timeout_seconds or _TASK_TIMEOUT, req.timeout_seconds)
 
     async def _go() -> None:
-        mcp_client, a2a_client = _build_clients(mcp_url, agent_url, token, req.timeout_seconds)
+        mcp_client, a2a_client = _build_clients(
+            mcp_url, agent_url, token, req.timeout_seconds, a2a_timeout=task_timeout
+        )
         async with mcp_client as mcp:
             await engine.run_benchmark(
                 run,
