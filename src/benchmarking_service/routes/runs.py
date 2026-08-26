@@ -88,26 +88,30 @@ async def _execute(
 
     inner = asyncio.create_task(_go())
     try:
-        # Shield the inner task so a wedged MCP connection — whose own async cleanup
-        # (anyio/httpx teardown) may block on the stuck socket and swallow the
-        # cancellation — can never pin the run in "running". The timeout fires and we
-        # record the failure regardless of whether the inner task ever unwinds.
-        await asyncio.wait_for(asyncio.shield(inner), timeout=req.timeout_seconds)
-    except asyncio.TimeoutError:
-        inner.cancel()  # best-effort; do not await a possibly un-cancellable task
-        run.status = RunStatus.failed
-        # The engine accumulates into run.results/run.summary live, so whatever finished
-        # before the deadline is preserved rather than discarded with the whole batch.
-        done = len(run.results)
-        run.error = (
-            f"run exceeded timeout of {req.timeout_seconds:g}s "
-            f"({done} task(s) completed before the deadline; partial results retained)"
-        )
-        run.finished_at = time.time()
-        logger.warning(
-            "benchmark run %s timed out after %ss (%d tasks completed)",
-            run.run_id, req.timeout_seconds, done,
-        )
+        # Bound the run with asyncio.wait (NOT wait_for + shield): wait returns on its
+        # OWN timer without re-awaiting the inner task, so an inner coroutine that
+        # swallows cancellation — a wedged MCP connection whose anyio/httpx teardown
+        # re-enters its cancel scope — can never pin the run in "running". wait_for(shield)
+        # re-awaits the cancelled task and hangs forever against exactly such a task
+        # (verified: a cancellation-swallowing inner wedges wait_for but not wait).
+        done_set, _pending = await asyncio.wait({inner}, timeout=req.timeout_seconds)
+        if inner not in done_set:
+            inner.cancel()  # best-effort; do not await a possibly un-cancellable task
+            run.status = RunStatus.failed
+            # The engine accumulates into run.results/run.summary live, so whatever
+            # finished before the deadline is preserved rather than discarded.
+            done = len(run.results)
+            run.error = (
+                f"run exceeded timeout of {req.timeout_seconds:g}s "
+                f"({done} task(s) completed before the deadline; partial results retained)"
+            )
+            run.finished_at = time.time()
+            logger.warning(
+                "benchmark run %s timed out after %ss (%d tasks completed)",
+                run.run_id, req.timeout_seconds, done,
+            )
+        else:
+            inner.result()  # completed within budget; re-raise any error from the run body
     except Exception as exc:  # noqa: BLE001 - the background task must never raise out
         run.status = RunStatus.failed
         run.error = str(exc)

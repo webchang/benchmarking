@@ -382,3 +382,46 @@ def test_run_times_out_when_mcp_wedges(client, make_token, jwks_doc, monkeypatch
     data = _poll(client, _auth(make_token), r.json()["run_id"])
     assert data["status"] == "failed"
     assert "timeout" in data["error"].lower()
+
+
+class _CancelSwallowingMcp:
+    """Its __aenter__ ignores cancellation for a bounded window — models a wedged MCP
+    whose anyio teardown re-enters its cancel scope and swallows the cancel. The outer
+    wall-timeout must still self-clear the run: `asyncio.wait` returns on its own timer,
+    whereas the old `wait_for(shield(inner))` re-awaited the task and hung forever.
+
+    Self-terminates so the test event loop can tear down (real orphans are GC'd on
+    process exit); a live loop would otherwise be pinned by an immortal task.
+    """
+
+    async def __aenter__(self):
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 1.0:
+            try:
+                await asyncio.sleep(0.02)
+            except asyncio.CancelledError:
+                continue
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+@respx.mock
+def test_run_times_out_when_inner_swallows_cancellation(client, make_token, jwks_doc, monkeypatch):
+    # The run's outer backstop must fire even when the inner task ignores cancellation,
+    # so the run self-clears to failed instead of orphaning in "running" indefinitely.
+    _mock_auth(jwks_doc)
+    _mock_ready(True)
+    monkeypatch.setattr(
+        runs_module, "_build_clients", lambda *a, **k: (_CancelSwallowingMcp(), _FakeA2A())
+    )
+    r = client.post(
+        "/benchmarks/gsm8k/runs",
+        headers=_auth(make_token),
+        json={"max_tasks": 1, "timeout_seconds": 0.3},
+    )
+    assert r.status_code == 202, r.text
+    data = _poll(client, _auth(make_token), r.json()["run_id"], timeout=8.0)
+    assert data["status"] == "failed"
+    assert "timeout" in data["error"].lower()

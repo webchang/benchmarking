@@ -118,6 +118,51 @@ async def test_call_timeout_releases_the_shared_lock():
     with pytest.raises(McpCallTimeout):
         await sess._call("create_session", {"task_id": "t1"})
     assert not sess._lock.locked()
-    # A subsequent call on a now-healthy session proceeds normally.
+    # A cancellable stall leaves the session usable (not poisoned): a subsequent call on a
+    # now-healthy session proceeds normally.
+    assert sess._poisoned is False
     sess._session = _FastSession()
     assert await sess.list_tasks() == ["t1"]
+
+
+class _StubbornSession:
+    """call_tool ignores cancellation, like a crash-looping pod's streamable-http reader
+    (the anyio background reader that swallows the cancel `asyncio.timeout` injects).
+
+    It self-terminates after `life` seconds — a real orphan is GC'd when the loop/process
+    ends, but a test must not leak an immortal task that wedges event-loop teardown. It
+    returns (not raises) at the end so there is no unretrieved-exception warning.
+    """
+
+    def __init__(self, life=1.0):
+        self.calls = 0
+        self._life = life
+
+    async def call_tool(self, tool, arguments=None):
+        self.calls += 1
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < self._life:
+            try:
+                await asyncio.sleep(0.02)
+            except asyncio.CancelledError:
+                continue  # swallow — only elapsed time stops us, not cancellation
+        return _FakeResult('{"session_id": "late"}')  # finishes late; result discarded
+
+
+async def test_uncancellable_call_poisons_session_and_fails_fast():
+    # When the call can't be reaped (the reader ignores cancellation), the orphan is still
+    # live on the shared session's streams — so the session is poisoned and every later
+    # call fails fast instead of starting a concurrent call_tool that would corrupt it.
+    sess = McpEvalSession("http://mcp", call_timeout=0.2, reap_grace=0.1)
+    sess._session = _StubbornSession(life=1.0)
+    t0 = time.monotonic()
+    with pytest.raises(McpCallTimeout, match="exceeded"):
+        await sess._call("create_session", {"task_id": "t1"})
+    assert time.monotonic() - t0 < 3.0  # bounded by call_timeout + reap_grace, not `life`
+    assert sess._poisoned is True
+    assert not sess._lock.locked()
+
+    # Subsequent calls fail fast (poisoned) without ever touching the underlying session.
+    with pytest.raises(McpCallTimeout, match="poisoned"):
+        await sess._call("create_session", {"task_id": "t2"})
+    assert sess._session.calls == 1
