@@ -115,6 +115,28 @@ async def test_run_benchmark_agent_error_is_captured_not_fatal():
     assert sorted(mcp.deleted) == ["sess-t1", "sess-t2"]
 
 
+async def test_run_benchmark_mcp_call_timeout_fails_only_that_task():
+    # A per-call MCP timeout on one task must fail *that* task and preserve the rest,
+    # not poison the whole batch — the reason the per-call timeout exists.
+    from benchmarking_service.runner.mcp_session import McpCallTimeout
+
+    class TimeoutOnMcp(FakeMcp):
+        async def create_session(self, task_id):
+            if task_id == "t2":
+                raise McpCallTimeout("MCP call 'create_session' exceeded 120s")
+            return await super().create_session(task_id)
+
+    mcp = TimeoutOnMcp(["t1", "t2", "t3"])
+    run = await engine.run_benchmark(_run_state(), mcp, FakeA2A(), max_parallel=2)
+
+    assert run.status is RunStatus.succeeded  # batch completed despite one stall
+    by_task = {r.task_id: r for r in run.results}
+    assert "exceeded" in by_task["t2"].error
+    assert by_task["t2"].passed is False
+    assert by_task["t1"].error is None and by_task["t3"].error is None
+    assert run.summary.succeeded == 2  # t1 + t3 preserved
+
+
 async def test_run_benchmark_max_tasks_slices():
     mcp = FakeMcp(["t0", "t1", "t2", "t3", "t4"])
     run = await engine.run_benchmark(_run_state(), mcp, FakeA2A(), max_tasks=2, max_parallel=2)

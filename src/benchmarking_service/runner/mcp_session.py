@@ -25,6 +25,11 @@ _BENIGN_DELETE_MARKERS = (
 # tasks may be blocked on a stuck socket — keeps a failed connect from re-wedging.
 _CLEANUP_TIMEOUT = 10.0
 
+# Default per-call bound. MCP calls here (list/create/evaluate/delete_session) are
+# lightweight metadata ops, so 120s is generous; the point is that it is far below a
+# typical whole-run budget so one stuck call fails its own task instead of the batch.
+_DEFAULT_CALL_TIMEOUT = 120.0
+
 
 class McpConnectError(RuntimeError):
     """MCP connect/initialize handshake failed or timed out.
@@ -35,11 +40,29 @@ class McpConnectError(RuntimeError):
     """
 
 
+class McpCallTimeout(RuntimeError):
+    """A single MCP tool call exceeded its per-call deadline.
+
+    Raised out of `_call` so a hung session (the tool pod stalls mid-call) fails
+    *that task* — the engine catches it per-task and records an errored result —
+    instead of holding the shared session lock forever and letting the run's outer
+    wall-timeout cancel the whole `asyncio.gather`, which would discard every
+    result including the tasks that already passed.
+    """
+
+
 class McpEvalSession:
-    def __init__(self, url: str, token: str | None = None, connect_timeout: float = 30.0):
+    def __init__(
+        self,
+        url: str,
+        token: str | None = None,
+        connect_timeout: float = 30.0,
+        call_timeout: float = _DEFAULT_CALL_TIMEOUT,
+    ):
         self._url = url
         self._headers = {"Authorization": f"Bearer {token}"} if token else None
         self._connect_timeout = connect_timeout
+        self._call_timeout = call_timeout
         self._session = None
         self._http_ctx = None
         self._lock = asyncio.Lock()
@@ -110,8 +133,17 @@ class McpEvalSession:
             self._http_ctx = None
 
     async def _call(self, tool: str, arguments: dict) -> dict:
+        # The per-call deadline is INSIDE the lock so a stuck call cancels and releases
+        # the shared session lock rather than wedging every other concurrent task on it.
         async with self._lock:
-            result = await self._session.call_tool(tool, arguments=arguments)
+            try:
+                async with asyncio.timeout(self._call_timeout):
+                    result = await self._session.call_tool(tool, arguments=arguments)
+            except TimeoutError as exc:
+                raise McpCallTimeout(
+                    f"MCP call {tool!r} to {self._url} exceeded {self._call_timeout:g}s "
+                    "(tool pod stalled?)"
+                ) from exc
         if not result.content:
             raise RuntimeError(f"empty response from {tool}")
         content = result.content[0]

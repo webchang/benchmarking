@@ -25,11 +25,17 @@ from ..runner.tracing import build_tracer
 router = APIRouter(prefix="/benchmarks", tags=["runs"])
 logger = logging.getLogger(__name__)
 
+# Upper bound for any single MCP tool call, capped further by the run's own budget in
+# _build_clients. Keeps one stalled call from consuming the whole-run wall-timeout.
+_MCP_CALL_TIMEOUT = 120.0
+
 
 def _build_clients(mcp_url: str, agent_url: str, token: str | None, timeout: float):
     """Seam for the live MCP/A2A wire clients; monkeypatched with fakes in tests."""
+    # Bound each MCP call below the whole-run budget so a single stalled call fails its
+    # own task instead of letting the run's outer wall-timeout kill the entire batch.
     return (
-        McpEvalSession(mcp_url, token=token),
+        McpEvalSession(mcp_url, token=token, call_timeout=min(_MCP_CALL_TIMEOUT, timeout)),
         A2AAgentClient(agent_url, token=token, timeout=timeout),
     )
 

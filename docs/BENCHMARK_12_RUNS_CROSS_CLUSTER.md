@@ -56,13 +56,16 @@ HTTP-only Service (which here targets a remote cluster with no kubeconfig) retur
 rather than silently mis-deploying.
 
 **#9, #10 (tau2) — the one regression, and it's environment/infra, not the Service.** The tau2 MCP
-(`exgentic-mcp-tau2`) crash-loops/restarts under any load on ykt2, and `mcp_session._call` has **no
-per-call timeout** — a single hung session blocks the whole `asyncio.gather` until the run's wall budget
-fires, so the entire batch reports `failed` with 0 results. This is *worse* than kind (where a clean
-3-task once passed); cross-cluster on ykt2 even a 1-task run hangs. Not a model or Service-API problem
-(Qwen3.6-35B tool-calling itself is fine; gsm8k passes). The two durable fixes are (a) a per-call timeout
-in `mcp_session._call` so a hung task fails individually instead of poisoning the batch, and (b) a more
-stable tau2 MCP image / more node headroom on ykt2. Clear orphaned `running` runs with
+(`exgentic-mcp-tau2`) crash-loops/restarts under any load on ykt2, which stalls MCP calls. Previously
+`mcp_session._call` had **no per-call timeout** — a single hung session blocked the whole
+`asyncio.gather` until the run's wall budget fired, so the entire batch reported `failed` with 0 results.
+This is *worse* than kind (where a clean 3-task once passed); cross-cluster on ykt2 even a 1-task run hung.
+Not a model or Service-API problem (Qwen3.6-35B tool-calling itself is fine; gsm8k passes). Fix (a) is now
+**implemented**: `mcp_session._call` bounds every call with `asyncio.timeout` (default 120s, capped by the
+run budget) *inside* the shared session lock, so a stalled call raises `McpCallTimeout`, fails only its
+own task, and releases the lock — the batch now preserves the tasks that did pass instead of losing
+everything. The remaining durable fix (b) is a more stable tau2 MCP image / more node headroom on ykt2, so
+those tasks stop stalling in the first place. Clear any orphaned `running` runs with
 `kubectl -n rossoctl-system rollout restart deploy/benchmarking-service` on ykt3.
 
 **#11, #12 (appworld) — blocked upstream by image architecture.** The published appworld MCP image is
