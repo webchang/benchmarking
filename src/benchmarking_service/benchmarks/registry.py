@@ -17,15 +17,52 @@ from ..models import (
     SecretKeyRef,
     ServicePort,
     ToolCreateRequest,
+    WorkloadLLMConfig,
     WorkloadOTELConfig,
 )
 
 
 _LITELLM_BASE_URL = "https://litemaas.rhoai.rh-aiservices-bu.com/v1"
 
+# Env names whose LLM-base value the instance override replaces (dropped then re-injected, so an
+# override wins cleanly instead of duplicating the name k8s would warn/drop on).
+_LLM_BASE_ENV = ("OPENAI_API_BASE", "LLM_API_BASE")
+
 
 def _secret_env(name: str, secret: str, key: str) -> EnvVar:
     return EnvVar(name=name, value_from=EnvVarSource(secret_key_ref=SecretKeyRef(name=secret, key=key)))
+
+
+def _resolve_model(
+    defn: "BenchmarkDefinition", model: str | None, llm: WorkloadLLMConfig | None
+) -> str:
+    """Effective model: explicit run/deploy model > instance default > benchmark default."""
+    return model or (llm.default_model if llm else None) or defn.default_model
+
+
+def _apply_llm(
+    env_vars: list[EnvVar], llm: WorkloadLLMConfig | None, *, agent: bool
+) -> list[EnvVar]:
+    """Override the LLM-base (and, for the agent, proxy) env from a per-instance config.
+
+    When `llm` is None the env is returned unchanged (default path). Otherwise any existing
+    OPENAI_API_BASE/LLM_API_BASE are dropped and re-injected from the effective base so there are no
+    duplicate env names; the agent also gets egress-proxy-bypass env when configured.
+    """
+    if llm is None:
+        return env_vars
+    base = llm.api_base or _LITELLM_BASE_URL
+    out = [e for e in env_vars if e.name not in _LLM_BASE_ENV]
+    out.append(EnvVar(name="OPENAI_API_BASE", value=base))
+    if agent:
+        out.append(EnvVar(name="LLM_API_BASE", value=base))
+        if llm.disable_proxy:
+            out.append(EnvVar(name="HTTP_PROXY", value=""))
+            out.append(EnvVar(name="http_proxy", value=""))
+        if llm.no_proxy:
+            out.append(EnvVar(name="NO_PROXY", value=llm.no_proxy))
+            out.append(EnvVar(name="no_proxy", value=llm.no_proxy))
+    return out
 
 
 class BenchmarkAgentSpec(BaseModel):
@@ -116,15 +153,22 @@ def required_secrets(defn: "BenchmarkDefinition", agent: str) -> list[tuple[str,
 
 
 def build_tool_request(
-    defn: "BenchmarkDefinition", namespace: str, model: str | None = None
+    defn: "BenchmarkDefinition",
+    namespace: str,
+    model: str | None = None,
+    llm: WorkloadLLMConfig | None = None,
 ) -> ToolCreateRequest:
     env_vars = list(defn.tool_env)
     if defn.user_simulator:
         # The user-simulator LLM shares the run's model with the agent (resolved the same way as
-        # build_agent_request). Empty model falls back to the benchmark's default.
+        # build_agent_request). Empty model falls back to the instance/benchmark default.
         env_vars.append(
-            EnvVar(name="EXGENTIC_SET_BENCHMARK_USER_SIMULATOR_MODEL", value=model or defn.default_model)
+            EnvVar(
+                name="EXGENTIC_SET_BENCHMARK_USER_SIMULATOR_MODEL",
+                value=_resolve_model(defn, model, llm),
+            )
         )
+    env_vars = _apply_llm(env_vars, llm, agent=False)
     return ToolCreateRequest(
         name=tool_name(defn.name),
         namespace=namespace,
@@ -160,9 +204,10 @@ def build_agent_request(
     experiment: str = "default",
     otel: WorkloadOTELConfig | None = None,
     authbridge_enabled: bool = False,
+    llm: WorkloadLLMConfig | None = None,
 ) -> AgentCreateRequest:
     spec = defn.agents[agent]
-    resolved_model = model or defn.default_model
+    resolved_model = _resolve_model(defn, model, llm)
     injected = [
         # Agent->tool is always intra-cluster (agent and tool are co-located in the target
         # cluster), so this stays svc.cluster.local even for a cross-cluster run — no template.
@@ -172,12 +217,13 @@ def build_agent_request(
     ]
     if otel is not None and otel.enabled:
         injected += _otel_env(otel)
+    env_vars = _apply_llm(list(spec.extra_env) + injected, llm, agent=True)
     return AgentCreateRequest(
         name=agent_name(defn.name, agent, experiment),
         namespace=namespace,
         container_image=spec.container_image,
         image_tag=spec.image_tag,
-        env_vars=list(spec.extra_env) + injected,
+        env_vars=env_vars,
         service_ports=[ServicePort(port=8080, target_port=8000)],
         resources=spec.resources,
         authbridge_enabled=authbridge_enabled,

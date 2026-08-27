@@ -181,6 +181,124 @@ def test_agent_authbridge_enabled_flows_to_wire():
     assert agent.to_rossoctl_body()["authBridgeEnabled"] is True
 
 
+def test_agent_default_llm_base_not_duplicated():
+    # No workload_llm: the registry's built-in LiteLLM base is used and appears exactly once each.
+    defn = registry.BENCHMARKS["gsm8k"]
+    agent = registry.build_agent_request(defn, "tool_calling", "team1", None, "default")
+    names = [e.name for e in agent.env_vars]
+    assert names.count("OPENAI_API_BASE") == 1
+    assert names.count("LLM_API_BASE") == 1
+    env = {e.name: e.value for e in agent.env_vars if e.value is not None}
+    assert env["OPENAI_API_BASE"] == registry._LITELLM_BASE_URL
+    assert env["LLM_API_BASE"] == registry._LITELLM_BASE_URL
+    # No proxy env on the default path.
+    assert not any(n in {"HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy"} for n in names)
+
+
+def test_agent_workload_llm_overrides_base_model_and_proxy():
+    from benchmarking_service.models import WorkloadLLMConfig
+
+    defn = registry.BENCHMARKS["gsm8k"]
+    llm = WorkloadLLMConfig(
+        api_base="https://ete-litellm.example.vpc/v1",
+        default_model="openai/Azure/gpt-5-mini-2025-08-07",
+        disable_proxy=True,
+        no_proxy="127.0.0.1,localhost,ete-litellm.example.vpc,.svc.cluster.local",
+    )
+    agent = registry.build_agent_request(
+        defn, "tool_calling", "team1", None, "default", None, False, llm
+    )
+    names = [e.name for e in agent.env_vars]
+    # Base overridden and still present exactly once each (no dup with the static extra_env entry).
+    assert names.count("OPENAI_API_BASE") == 1
+    assert names.count("LLM_API_BASE") == 1
+    env = {e.name: e.value for e in agent.env_vars}
+    assert env["OPENAI_API_BASE"] == "https://ete-litellm.example.vpc/v1"
+    assert env["LLM_API_BASE"] == "https://ete-litellm.example.vpc/v1"
+    # Instance default model wins when no explicit model was passed.
+    assert env["LLM_MODEL"] == "openai/Azure/gpt-5-mini-2025-08-07"
+    assert env["EXGENTIC_SET_AGENT_MODEL"] == "openai/Azure/gpt-5-mini-2025-08-07"
+    # Proxy-disable + bypass list injected as empty/value env.
+    assert env["HTTP_PROXY"] == ""
+    assert env["http_proxy"] == ""
+    assert env["NO_PROXY"] == "127.0.0.1,localhost,ete-litellm.example.vpc,.svc.cluster.local"
+    assert env["no_proxy"] == env["NO_PROXY"]
+
+
+def test_explicit_model_overrides_instance_default():
+    from benchmarking_service.models import WorkloadLLMConfig
+
+    defn = registry.BENCHMARKS["gsm8k"]
+    llm = WorkloadLLMConfig(default_model="openai/Azure/gpt-5-mini-2025-08-07")
+    agent = registry.build_agent_request(
+        defn, "tool_calling", "team1", "openai/gpt-4o", "default", None, False, llm
+    )
+    env = {e.name: e.value for e in agent.env_vars}
+    assert env["LLM_MODEL"] == "openai/gpt-4o"
+    assert env["EXGENTIC_SET_AGENT_MODEL"] == "openai/gpt-4o"
+
+
+def test_workload_llm_no_proxy_env_when_not_disabled():
+    from benchmarking_service.models import WorkloadLLMConfig
+
+    defn = registry.BENCHMARKS["gsm8k"]
+    llm = WorkloadLLMConfig(api_base="https://ete-litellm.example.vpc/v1")
+    agent = registry.build_agent_request(
+        defn, "tool_calling", "team1", None, "default", None, False, llm
+    )
+    names = {e.name for e in agent.env_vars}
+    assert not any(n in {"HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy"} for n in names)
+
+
+def test_tool_workload_llm_overrides_base_and_simulator_model():
+    from benchmarking_service.models import WorkloadLLMConfig
+
+    defn = registry.BENCHMARKS["tau2"]
+    llm = WorkloadLLMConfig(
+        api_base="https://ete-litellm.example.vpc/v1",
+        default_model="openai/Azure/gpt-5-mini-2025-08-07",
+    )
+    tool = registry.build_tool_request(defn, "team1", None, llm)
+    names = [e.name for e in tool.env_vars]
+    # Tool gets OPENAI_API_BASE overridden once; the tool never carries LLM_API_BASE/proxy.
+    assert names.count("OPENAI_API_BASE") == 1
+    assert "LLM_API_BASE" not in names
+    env = {e.name: e.value for e in tool.env_vars if e.value is not None}
+    assert env["OPENAI_API_BASE"] == "https://ete-litellm.example.vpc/v1"
+    # Simulator model uses the instance default when no explicit model is passed.
+    assert env["EXGENTIC_SET_BENCHMARK_USER_SIMULATOR_MODEL"] == "openai/Azure/gpt-5-mini-2025-08-07"
+
+
+@respx.mock
+def test_deploy_injects_workload_llm_from_instance(tmp_path, instance_dict, monkeypatch, make_token, jwks_doc):
+    instance_dict["workload_llm"] = {
+        "api_base": "https://ete-litellm.example.vpc/v1",
+        "default_model": "openai/Azure/gpt-5-mini-2025-08-07",
+        "disable_proxy": True,
+        "no_proxy": "127.0.0.1,localhost,ete-litellm.example.vpc",
+    }
+    (tmp_path / "kc.json").write_text(json.dumps(instance_dict))
+    monkeypatch.setattr(settings, "instances_dir", str(tmp_path))
+    _mock_auth(jwks_doc)
+    tool_route = respx.post(f"{ROSSOCTL_URL}/api/v1/tools").mock(return_value=httpx.Response(201, json={}))
+    agent_route = respx.post(f"{ROSSOCTL_URL}/api/v1/agents").mock(
+        return_value=httpx.Response(201, json={})
+    )
+    with TestClient(create_app()) as c:
+        r = c.post("/benchmarks/gsm8k/deploy", headers=_auth(make_token), json={})
+    assert r.status_code == 201, r.text
+    agent_names = [e["name"] for e in json.loads(agent_route.calls.last.request.content)["envVars"]]
+    agent_env = {e["name"]: e.get("value") for e in json.loads(agent_route.calls.last.request.content)["envVars"]}
+    assert agent_names.count("OPENAI_API_BASE") == 1
+    assert agent_env["OPENAI_API_BASE"] == "https://ete-litellm.example.vpc/v1"
+    assert agent_env["LLM_API_BASE"] == "https://ete-litellm.example.vpc/v1"
+    assert agent_env["LLM_MODEL"] == "openai/Azure/gpt-5-mini-2025-08-07"
+    assert agent_env["HTTP_PROXY"] == ""
+    assert agent_env["NO_PROXY"] == "127.0.0.1,localhost,ete-litellm.example.vpc"
+    tool_env = {e["name"]: e.get("value") for e in json.loads(tool_route.calls.last.request.content)["envVars"]}
+    assert tool_env["OPENAI_API_BASE"] == "https://ete-litellm.example.vpc/v1"
+
+
 def test_agent_name_experiment_suffix():
     assert registry.agent_name("gsm8k", "tool_calling", "exp1") == "exgentic-a2a-tool-calling-gsm8k-exp1"
     assert registry.agent_name("gsm8k", "tool_calling", "default") == "exgentic-a2a-tool-calling-gsm8k"

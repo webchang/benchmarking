@@ -412,6 +412,32 @@ already injects makes those spans nest under `Agent.Session`, filling the LLM/to
 this is *agent-side* config living in the instance file, distinct from `PUT /config`, which only
 manages the Service's own MLflow/S3.
 
+**Targeting a custom LLM endpoint (optional `workload_llm`).** The benchmark registry bakes a default
+LiteLLM base URL (`_LITELLM_BASE_URL`) and default model into every tool/agent env. That is fine when
+the instance's workloads reach the shared LiteLLM, but some instances must call a *different* gateway —
+e.g. an internal VPC LiteLLM that is not internet-routed. Because the Service owns the tool/agent spec
+and recreates it on every deploy, pointing the workloads elsewhere has to be **config, not a manual
+`oc set env`** (which any redeploy would wipe). Set `workload_llm` in the instance file to override, at
+deploy time:
+
+- `api_base` — replaces `OPENAI_API_BASE` (tool + agent) and `LLM_API_BASE` (agent). `build_tool_request`/
+  `build_agent_request` **drop** the registry's static base entries and re-inject from this value, so
+  there is never a duplicate env name.
+- `default_model` — the instance's default model when a deploy/run passes no explicit `model` (takes
+  precedence over the benchmark's own `default_model`). Required when the target gateway's catalog does
+  not carry the registry default (e.g. an endpoint with no Qwen).
+- `disable_proxy` / `no_proxy` — inject `HTTP_PROXY=""`/`http_proxy=""` and a `NO_PROXY`/`no_proxy`
+  bypass list on the agent, so an in-VPC (non-internet-routed) base is reachable through the egress
+  proxy. Off by default.
+
+This is opt-in and off by default (registry defaults apply when `workload_llm` is unset), instance-
+scoped (other instances keep the shared LiteLLM with their own secret), and agent-side (instance file,
+not `PUT /config`). The LLM **API key is never carried here** — it stays in the cluster `openai-secret`
+the workloads mount. One gotcha worth recording: gateways with a per-team allowlist are strict about
+the exact model id — the entitled alias (e.g. `Azure/gpt-5-mini-2025-08-07`, prefixed `openai/` so
+litellm routes to the OpenAI-compatible base) must be used; a bare/mis-cased id (`gpt-5-mini`) is
+rejected 403 "team not allowed to access model."
+
 **Two MLflow auth modes (`auth/mlflow.py:mlflow_token`), chosen by config:**
 
 - **Keycloak client-credentials** (default): a `grant_type=client_credentials` POST to
@@ -615,6 +641,20 @@ route; and the backend **trusting a token the Service can mint** — kagenti-bac
 the Service must reach the target's internal keycloak (or the backend's trust must be widened). Until
 that is provisioned, a cross-cluster run surfaces as an upstream-login/precheck failure, not a
 silent hang.
+
+**Known per-deploy infra quirk: agent Route `targetPort` (rossoctl-side, not this Service).** When
+the target cluster auto-creates the agent's OpenShift `Route`, it points `spec.port.targetPort` at
+the Service **port** (`8080`) while the agent pod's endpoints are on `8000`. The OpenShift router
+then finds no matching endpoint and returns a uniform **`503 "Application is not available"`** at the
+edge — even though the agent is healthy in-cluster (agent-card `200`, MCP connected) and the Route is
+`admitted=True`. A run against that agent fails instantly fetching the agent card. The MCP Route is
+unaffected (its Service port already equals the endpoint port `8000`). The fix is a one-line patch
+per deploy: `oc -n <ns> patch route <exgentic-a2a-...> --type=merge -p
+'{"spec":{"port":{"targetPort":8000}}}'`. This Service is HTTP-only and does not manage Routes, so it
+cannot correct this itself. **Follow-up:** the durable fix belongs **upstream in rossoctl's agent
+Route generation** (emit `targetPort: 8000`, or a named port that resolves to the pod port); until
+then the patch is a required manual step after every `POST /deploy` on such clusters. Diagnosis
+tell: agent Route `503` (router, no backend) vs MCP Route `404`/`406` to a plain GET (app is up).
 
 **Single co-located instance; config via Secret/ConfigMap.** In kind there is exactly one
 in-scope Rossoctl (the cluster the Service runs in), so the `iss`-keyed instance map has a single
