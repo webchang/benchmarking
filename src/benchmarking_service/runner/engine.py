@@ -141,7 +141,31 @@ async def run_benchmark(
                 results.append(result)
                 _publish_summary()  # keep run.summary current so a timeout salvages partials
 
-        await asyncio.gather(*(_one(t) for t in task_ids))
+        # return_exceptions=True so a single task that raises something the per-task guard
+        # in _one does NOT catch — a BaseException such as a CancelledError propagated up by
+        # a corrupted shared MCP session (concurrent call_tool on one session under the p>1
+        # cascade) — is captured as that task's outcome instead of cancelling every sibling
+        # and aborting the whole run. Otherwise that lone CancelledError re-raises out of
+        # gather, past run_benchmark (which never reaches the succeeded line below) and past
+        # _execute's `except Exception`, orphaning the run in "running" (tau2 #10).
+        outcomes = await asyncio.gather(
+            *(_one(t) for t in task_ids), return_exceptions=True
+        )
+        # _one records its own result and returns None; if it raised before recording, book
+        # that task as errored so the batch still accounts for every task (serial parity).
+        for task_id, outcome in zip(task_ids, outcomes):
+            if isinstance(outcome, BaseException) and not any(
+                r.task_id == task_id for r in results
+            ):
+                results.append(
+                    TaskResult(
+                        task_id=task_id,
+                        session_id=None,
+                        passed=False,
+                        latency_seconds=0.0,
+                        error=f"task aborted before recording a result: {outcome!r}",
+                    )
+                )
 
         _publish_summary()
         run.status = RunStatus.succeeded

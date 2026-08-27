@@ -34,13 +34,22 @@ _MCP_CALL_TIMEOUT = 120.0
 _TASK_TIMEOUT = 300.0
 
 
-def _build_clients(mcp_url: str, agent_url: str, token: str | None, timeout: float):
+def _build_clients(
+    mcp_url: str,
+    agent_url: str,
+    token: str | None,
+    timeout: float,
+    a2a_timeout: float | None = None,
+):
     """Seam for the live MCP/A2A wire clients; monkeypatched with fakes in tests."""
     # Bound each MCP call below the whole-run budget so a single stalled call fails its
     # own task instead of letting the run's outer wall-timeout kill the entire batch.
+    # Give the A2A client the per-task budget as its own hard deadline: the a2a-sdk
+    # stream does not reliably tear down on cancellation, so the client must self-enforce
+    # (else a stalled agent turn wedges the batch at parallelism > 1 — tau2 #10).
     return (
         McpEvalSession(mcp_url, token=token, call_timeout=min(_MCP_CALL_TIMEOUT, timeout)),
-        A2AAgentClient(agent_url, token=token, timeout=timeout),
+        A2AAgentClient(agent_url, token=token, timeout=(a2a_timeout or timeout)),
     )
 
 
@@ -61,7 +70,9 @@ async def _execute(
     task_timeout = min(req.task_timeout_seconds or _TASK_TIMEOUT, req.timeout_seconds)
 
     async def _go() -> None:
-        mcp_client, a2a_client = _build_clients(mcp_url, agent_url, token, req.timeout_seconds)
+        mcp_client, a2a_client = _build_clients(
+            mcp_url, agent_url, token, req.timeout_seconds, a2a_timeout=task_timeout
+        )
         async with mcp_client as mcp:
             await engine.run_benchmark(
                 run,
@@ -77,32 +88,56 @@ async def _execute(
 
     inner = asyncio.create_task(_go())
     try:
-        # Shield the inner task so a wedged MCP connection — whose own async cleanup
-        # (anyio/httpx teardown) may block on the stuck socket and swallow the
-        # cancellation — can never pin the run in "running". The timeout fires and we
-        # record the failure regardless of whether the inner task ever unwinds.
-        await asyncio.wait_for(asyncio.shield(inner), timeout=req.timeout_seconds)
-    except asyncio.TimeoutError:
-        inner.cancel()  # best-effort; do not await a possibly un-cancellable task
-        run.status = RunStatus.failed
-        # The engine accumulates into run.results/run.summary live, so whatever finished
-        # before the deadline is preserved rather than discarded with the whole batch.
-        done = len(run.results)
-        run.error = (
-            f"run exceeded timeout of {req.timeout_seconds:g}s "
-            f"({done} task(s) completed before the deadline; partial results retained)"
-        )
-        run.finished_at = time.time()
-        logger.warning(
-            "benchmark run %s timed out after %ss (%d tasks completed)",
-            run.run_id, req.timeout_seconds, done,
-        )
+        # Bound the run with asyncio.wait (NOT wait_for + shield): wait returns on its
+        # OWN timer without re-awaiting the inner task, so an inner coroutine that
+        # swallows cancellation — a wedged MCP connection whose anyio/httpx teardown
+        # re-enters its cancel scope — can never pin the run in "running". wait_for(shield)
+        # re-awaits the cancelled task and hangs forever against exactly such a task
+        # (verified: a cancellation-swallowing inner wedges wait_for but not wait).
+        done_set, _pending = await asyncio.wait({inner}, timeout=req.timeout_seconds)
+        if inner not in done_set:
+            inner.cancel()  # best-effort; do not await a possibly un-cancellable task
+            run.status = RunStatus.failed
+            # The engine accumulates into run.results/run.summary live, so whatever
+            # finished before the deadline is preserved rather than discarded.
+            done = len(run.results)
+            run.error = (
+                f"run exceeded timeout of {req.timeout_seconds:g}s "
+                f"({done} task(s) completed before the deadline; partial results retained)"
+            )
+            run.finished_at = time.time()
+            logger.warning(
+                "benchmark run %s timed out after %ss (%d tasks completed)",
+                run.run_id, req.timeout_seconds, done,
+            )
+        else:
+            inner.result()  # completed within budget; re-raise any error from the run body
     except Exception as exc:  # noqa: BLE001 - the background task must never raise out
         run.status = RunStatus.failed
         run.error = str(exc)
         run.finished_at = time.time()
         logger.exception("benchmark run %s failed", run.run_id)
     finally:
+        # Absolute backstop: a run must NEVER be left non-terminal, however _execute exits.
+        # `except Exception` above misses BaseException — notably a CancelledError bubbling
+        # up out of the run body (a corrupted shared MCP session can propagate an anyio
+        # cancellation through asyncio.gather; inner.result() then re-raises it). Without
+        # this the run would orphan in "running" forever with on_complete having already
+        # exported a non-terminal snapshot. Mark it failed here (before on_complete) and let
+        # any BaseException keep propagating — this sets state, it does not swallow the error.
+        if run.status not in (RunStatus.succeeded, RunStatus.failed):
+            run.status = RunStatus.failed
+            run.finished_at = time.time()
+            if not run.error:
+                done = len(run.results)
+                run.error = (
+                    f"run was interrupted before completing "
+                    f"({done} task(s) recorded before it stopped; partial results retained)"
+                )
+            logger.warning(
+                "benchmark run %s ended non-terminal; marked failed (%d tasks recorded)",
+                run.run_id, len(run.results),
+            )
         if on_complete is not None:
             try:
                 await on_complete(run)

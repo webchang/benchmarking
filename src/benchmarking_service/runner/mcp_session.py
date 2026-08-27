@@ -30,6 +30,13 @@ _CLEANUP_TIMEOUT = 10.0
 # typical whole-run budget so one stuck call fails its own task instead of the batch.
 _DEFAULT_CALL_TIMEOUT = 120.0
 
+# After a call blows its deadline we cancel it and wait this long for it to unwind. If
+# the SDK honours the cancellation the shared session stays usable; if it doesn't (a
+# crash-looping pod whose streamable-http reader ignores cancellation), the orphan is
+# still live on the session's streams, so we poison the session rather than risk a
+# concurrent second call corrupting it.
+_REAP_GRACE = 5.0
+
 
 class McpConnectError(RuntimeError):
     """MCP connect/initialize handshake failed or timed out.
@@ -58,14 +65,20 @@ class McpEvalSession:
         token: str | None = None,
         connect_timeout: float = 30.0,
         call_timeout: float = _DEFAULT_CALL_TIMEOUT,
+        reap_grace: float = _REAP_GRACE,
     ):
         self._url = url
         self._headers = {"Authorization": f"Bearer {token}"} if token else None
         self._connect_timeout = connect_timeout
         self._call_timeout = call_timeout
+        self._reap_grace = reap_grace
         self._session = None
         self._http_ctx = None
         self._lock = asyncio.Lock()
+        # Set once a call's deadline is hit and the call could not be reaped: the shared
+        # session may now have an orphaned call live on its streams, so every later call
+        # fails fast instead of starting a concurrent call_tool that would corrupt it.
+        self._poisoned = False
 
     async def __aenter__(self) -> "McpEvalSession":
         # The whole connect (transport open + session open + initialize) is bounded by
@@ -132,18 +145,65 @@ class McpEvalSession:
                 logger.warning("error closing MCP transport: %s", e)
             self._http_ctx = None
 
+    async def _bounded_call_tool(self, tool: str, arguments: dict):
+        """Run `call_tool` in a child task and enforce the deadline independently.
+
+        `asyncio.timeout` alone is not enough: when the tool pod crash-loops, the SDK's
+        streamable-http reader lives in a background anyio task group that can ignore the
+        cancellation `asyncio.timeout` injects, so the context manager never reaches its
+        boundary and hangs — holding the shared session lock and wedging the whole batch.
+        `asyncio.wait` returns on its own timer regardless, so control always comes back
+        and the lock is released. If the cancelled call cannot be reaped, the orphan is
+        still live on the session streams, so we poison the session (later calls fail
+        fast) rather than let a concurrent call_tool corrupt it.
+
+        The engine also wraps the whole task in its own (usually shorter) timeout. When
+        that fires it cancels us *from outside* while we await below — leaving the child
+        call in flight on the shared session. We cannot start a later task's call_tool on
+        that session without corrupting it, so we poison on external cancellation too.
+        """
+        call = asyncio.create_task(self._session.call_tool(tool, arguments=arguments))
+        try:
+            done, _pending = await asyncio.wait({call}, timeout=self._call_timeout)
+        except asyncio.CancelledError:
+            # Cancelled from outside (the engine's per-task deadline) mid-call. The child
+            # is still on the shared session's streams and cannot be safely reaped under
+            # our own cancellation, so poison the session and let this task's error stand.
+            call.cancel()
+            self._poison("cancelled mid-call by the per-task timeout")
+            raise
+        if call in done:
+            return call.result()
+
+        call.cancel()
+        # Brief grace for the SDK to honour cancellation. asyncio.wait (not wait_for) so a
+        # reader that ignores cancellation cannot pin us here re-awaiting the task.
+        done, _pending = await asyncio.wait({call}, timeout=self._reap_grace)
+        if call not in done:
+            self._poison("call exceeded its deadline and could not be reaped")
+        raise McpCallTimeout(
+            f"MCP call {tool!r} to {self._url} exceeded {self._call_timeout:g}s "
+            "(tool pod stalled?)"
+        )
+
+    def _poison(self, why: str) -> None:
+        if not self._poisoned:
+            logger.warning(
+                "MCP session to %s poisoned (%s); remaining calls will fail fast",
+                self._url, why,
+            )
+        self._poisoned = True
+
     async def _call(self, tool: str, arguments: dict) -> dict:
-        # The per-call deadline is INSIDE the lock so a stuck call cancels and releases
-        # the shared session lock rather than wedging every other concurrent task on it.
+        # The per-call deadline is INSIDE the lock so a stuck call fails and releases the
+        # shared session lock rather than wedging every other concurrent task on it.
         async with self._lock:
-            try:
-                async with asyncio.timeout(self._call_timeout):
-                    result = await self._session.call_tool(tool, arguments=arguments)
-            except TimeoutError as exc:
+            if self._poisoned:
                 raise McpCallTimeout(
-                    f"MCP call {tool!r} to {self._url} exceeded {self._call_timeout:g}s "
-                    "(tool pod stalled?)"
-                ) from exc
+                    f"MCP session to {self._url} was poisoned by an earlier stuck call "
+                    "(tool pod unreachable); failing fast"
+                )
+            result = await self._bounded_call_tool(tool, arguments)
         if not result.content:
             raise RuntimeError(f"empty response from {tool}")
         content = result.content[0]
