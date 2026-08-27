@@ -53,6 +53,28 @@ class WorkloadOTELConfig(BaseModel):
     resource_attributes: str | None = None  # OTEL_RESOURCE_ATTRIBUTES
 
 
+class WorkloadLLMConfig(BaseModel):
+    """Per-instance override for the LLM endpoint the workload pods call at deploy time.
+
+    The benchmark registry ships a default LiteLLM base URL + default model baked into every
+    tool/agent env. This config lifts those into per-instance settings so an instance whose
+    workloads must reach a *different* gateway (e.g. an internal VPC LiteLLM) reproduces that
+    endpoint on every deploy, surviving teardown→redeploy. Set out-of-band in the instance file,
+    like `workload_otel` and the endpoint templates. The API *key* is unaffected — it stays in the
+    cluster `openai-secret` and is never carried here.
+
+    `api_base` overrides `OPENAI_API_BASE` (tool + agent) and `LLM_API_BASE` (agent). `default_model`
+    is the instance default when a deploy/run passes no explicit model (takes precedence over the
+    benchmark's own default). `disable_proxy`/`no_proxy` inject egress-proxy-bypass env on the agent
+    so an in-VPC (non-internet-routed) base is reachable.
+    """
+
+    api_base: str | None = None
+    default_model: str | None = None
+    disable_proxy: bool = False  # inject HTTP_PROXY=""/http_proxy="" on the agent
+    no_proxy: str | None = None  # inject NO_PROXY/no_proxy bypass list on the agent
+
+
 class S3Config(BaseModel):
     """Service-enacted object store for hosting benchmark-result artifacts.
 
@@ -101,6 +123,9 @@ class InstanceConfig(BaseModel):
     # Optional OTEL env injected into the agent pod at deploy (points it at a collector that
     # forwards to MLflow). Set out-of-band in the instance file, like the endpoint templates.
     workload_otel: WorkloadOTELConfig | None = None
+    # Optional per-instance LLM endpoint/model/proxy override for the workload pods. Set out-of-band
+    # in the instance file. When unset, the registry's built-in LiteLLM base + default model are used.
+    workload_llm: WorkloadLLMConfig | None = None
 
 
 class ConfigUpdateRequest(BaseModel):

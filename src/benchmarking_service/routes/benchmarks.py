@@ -76,7 +76,7 @@ async def deploy_benchmark(
                 "the sidecar with the cluster-default pipeline."
             ),
         )
-    tool_req = build_tool_request(defn, req.namespace, req.model)
+    tool_req = build_tool_request(defn, req.namespace, req.model, ctx.instance.workload_llm)
     agent_req = build_agent_request(
         defn,
         req.agent,
@@ -85,6 +85,7 @@ async def deploy_benchmark(
         req.experiment,
         ctx.instance.workload_otel,
         req.authbridge_enabled,
+        ctx.instance.workload_llm,
     )
     try:
         tool_resp = await client.create_tool(tool_req.to_rossoctl_body())
