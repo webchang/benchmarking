@@ -304,7 +304,17 @@ BENCHMARKS: dict[str, BenchmarkDefinition] = {
     ),
     "appworld": BenchmarkDefinition(
         name="appworld",
-        mcp_image="ghcr.io/exgentic/exgentic-mcp-appworld:latest",
+        # Same exgentic framework as gsm8k/tau2 (agent-examples/mcp/exgentic_benchmarks, built with
+        # --build-arg BENCHMARK_NAME=appworld): it clones Exgentic/exgentic@feature/mcp-command, runs
+        # `exgentic install --benchmark appworld`, and serves `exgentic mcp --benchmark appworld` on
+        # :8000 exposing the uniform list_tasks/create_session/evaluate_session contract the Service
+        # runner drives. Upstream ghcr.io/exgentic/exgentic-mcp-appworld ships ONLY an arm64 manifest
+        # (Exec-format-errors on amd64 nodes), so this is a rebuilt multi-arch (arm64+amd64) image: the
+        # amd64 half is built natively in-cluster on ykt2 (buildx can't cross-build it — QEMU crashes
+        # git-lfs on the appworld data checkout), arm64 built natively, combined into one OCI index.
+        # NOTE: do NOT build from StonyBrookNLP/appworld[mcp] — that serves appworld's native app-action
+        # tools (supervisor__*/amazon__*), not the exgentic orchestration contract, so list_tasks 404s.
+        mcp_image="ghcr.io/webchang/exgentic-mcp-appworld:latest",
         # Upstream .env.appworld is explicitly empty ("Not required by appworld"). Unlike tau*/gsm8k,
         # the appworld MCP server does NOT accept the `benchmark.action_timeout` override (its schema
         # is docker_socket/env_kwargs/max_interactions/runner/seed/subset/tool_name_separator/

@@ -115,7 +115,7 @@ def test_appworld_tool_minimal_env():
     defn = registry.BENCHMARKS["appworld"]
     tool = registry.build_tool_request(defn, "team1", "gemini-2.5-pro")
     assert tool.name == "exgentic-mcp-appworld"
-    assert tool.container_image == "ghcr.io/exgentic/exgentic-mcp-appworld:latest"
+    assert tool.container_image == "ghcr.io/webchang/exgentic-mcp-appworld:latest"
     tool_env = {e.name: e.value for e in tool.env_vars if e.value is not None}
     assert tool_env["BENCHMARK_NAME"] == "appworld"
     # appworld is single-agent and neither gsm8k nor tau2; the appworld MCP image also rejects the
@@ -450,7 +450,7 @@ def test_deploy_appworld_issues_tool_then_agent(client, make_token, jwks_doc):
     assert data["agent_name"] == "exgentic-a2a-tool-calling-appworld"
 
     tool_body = json.loads(tool_route.calls.last.request.content)
-    assert tool_body["containerImage"] == "ghcr.io/exgentic/exgentic-mcp-appworld:latest"
+    assert tool_body["containerImage"] == "ghcr.io/webchang/exgentic-mcp-appworld:latest"
     tool_env = {e["name"]: e.get("value") for e in tool_body["envVars"]}
     assert tool_env["BENCHMARK_NAME"] == "appworld"
     assert "EXGENTIC_SET_BENCHMARK_USER_SIMULATOR_MODEL" not in tool_env
