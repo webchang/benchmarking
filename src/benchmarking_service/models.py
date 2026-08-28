@@ -206,6 +206,28 @@ class AgentResources(BaseModel):
     requests: ResourceQuantities | None = None
     limits: ResourceQuantities | None = None
 
+    def to_rossoctl_fields(self) -> dict:
+        """Serialize to the flat resource fields the Rossoctl API actually reads.
+
+        Rossoctl's POST /api/v1/tools and /api/v1/agents take resource overrides
+        as two flat {cpu, memory} dicts, ``k8sResourceLimits`` and
+        ``k8sResourceRequests`` -- NOT a nested requests/limits object. When they
+        are absent the backend falls back to DEFAULT_RESOURCE_LIMITS (1Gi) /
+        DEFAULT_RESOURCE_REQUESTS (256Mi), so sending a nested ``resources`` blob
+        (which the backend has no field for) silently pins every pod to the 1Gi
+        default. Emit the flat fields the backend recognizes instead.
+        """
+        fields: dict = {}
+        if self.limits is not None:
+            limits = self.limits.model_dump(exclude_none=True)
+            if limits:
+                fields["k8sResourceLimits"] = limits
+        if self.requests is not None:
+            requests = self.requests.model_dump(exclude_none=True)
+            if requests:
+                fields["k8sResourceRequests"] = requests
+        return fields
+
 
 class AgentCreateRequest(BaseModel):
     name: str
@@ -254,7 +276,7 @@ class AgentCreateRequest(BaseModel):
             "spireEnabled": self.spire_enabled,
         }
         if self.resources is not None:
-            body["resources"] = self.resources.model_dump(exclude_none=True)
+            body.update(self.resources.to_rossoctl_fields())
         if self.image_pull_policy is not None:
             body["imagePullPolicy"] = self.image_pull_policy
         return body
@@ -306,7 +328,7 @@ class ToolCreateRequest(BaseModel):
             "createHttpRoute": self.create_http_route,
         }
         if self.resources is not None:
-            body["resources"] = self.resources.model_dump(exclude_none=True)
+            body.update(self.resources.to_rossoctl_fields())
         if self.image_pull_policy is not None:
             body["imagePullPolicy"] = self.image_pull_policy
         return body

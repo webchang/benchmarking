@@ -85,6 +85,18 @@ def test_tau2_tool_injects_simulator_model():
     assert "HF_TOKEN" not in names
 
 
+def test_tau2_tool_wire_carries_flat_resource_limits():
+    # The tau2 MCP peaks ~1.9 GiB at p=4; the registry asks for a 4Gi limit. That must
+    # reach Rossoctl as the flat k8sResourceLimits field (NOT a nested `resources` blob,
+    # which the backend has no field for and silently drops -> 1Gi default -> OOMKill).
+    defn = registry.BENCHMARKS["tau2"]
+    tool = registry.build_tool_request(defn, "team1")
+    body = tool.to_rossoctl_body()
+    assert "resources" not in body
+    assert body["k8sResourceLimits"]["memory"] == "4Gi"
+    assert body["k8sResourceRequests"]["memory"] == "512Mi"
+
+
 def test_tau2_simulator_model_defaults_when_unset():
     defn = registry.BENCHMARKS["tau2"]
     tool = registry.build_tool_request(defn, "team1")

@@ -19,7 +19,10 @@ def test_to_rossoctl_body_shape():
         container_image="reg/img:tag",
         image_tag="tag",
         env_vars=[{"name": "K", "value": "V"}],
-        resources={"requests": {"cpu": "100m", "memory": "128Mi"}},
+        resources={
+            "requests": {"cpu": "100m", "memory": "128Mi"},
+            "limits": {"cpu": "2", "memory": "4Gi"},
+        },
         image_pull_policy="IfNotPresent",
     )
     body = req.to_rossoctl_body()
@@ -31,8 +34,12 @@ def test_to_rossoctl_body_shape():
     assert body["servicePorts"] == [
         {"name": "http", "port": 8080, "targetPort": 8000, "protocol": "TCP"}
     ]
-    # Inventory #3 fields present when set.
-    assert body["resources"] == {"requests": {"cpu": "100m", "memory": "128Mi"}}
+    # Resources go out as the flat fields Rossoctl reads (k8sResourceLimits /
+    # k8sResourceRequests), NOT a nested `resources` object -- otherwise the
+    # backend drops them and defaults every pod to 1Gi. See AgentResources.
+    assert "resources" not in body
+    assert body["k8sResourceLimits"] == {"cpu": "2", "memory": "4Gi"}
+    assert body["k8sResourceRequests"] == {"cpu": "100m", "memory": "128Mi"}
     assert body["imagePullPolicy"] == "IfNotPresent"
 
 
@@ -41,6 +48,8 @@ def test_body_omits_optional_when_unset():
         name="a", namespace="n", container_image="i"
     ).to_rossoctl_body()
     assert "resources" not in body
+    assert "k8sResourceLimits" not in body
+    assert "k8sResourceRequests" not in body
     assert "imagePullPolicy" not in body
 
 
