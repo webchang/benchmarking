@@ -283,23 +283,28 @@ over the rossoctl HTTP API the Service talks to:
    ports-exclude. These *are* settable over HTTP.
 3. **Per-agent plugin composition + `on_error` policy** (`authbridge-config-<agent>` ConfigMap) —
    exactly what the upstream harness `--plugin-preset {auth-only|ibac-only|full}`,
-   `--plugin NAME:{enforce|observe|off}`, `--no-plugin`, and `--plugin-config-file` control. This is
-   enacted **only** by a kubectl overlay of that per-agent ConfigMap plus a sidecar hot-reload
-   (`authbridge/apply-pipeline.sh`). **There is no preset / plugin-list / `on_error` field anywhere
-   in the backend HTTP request path.**
+   `--plugin NAME:{enforce|observe|off}`, `--no-plugin`, and `--plugin-config-file` control. The
+   harness enacts this with a kubectl overlay of that per-agent ConfigMap plus a sidecar hot-reload
+   (`authbridge/apply-pipeline.sh`).
 
-The Service is HTTP-only and typically targets a *remote* workload cluster with no kubeconfig, so it
-can enact layer 2 but never layer 3. `DeployBenchmarkRequest.authbridge_enabled` (→ `authBridgeEnabled`
-on the agent create body) is the one AuthBridge knob exposed today: it injects the sidecar running the
-**cluster-default** pipeline (so it approximates the harness's `full` run *iff* the cluster base is
-`full`; it cannot reproduce `auth-only`/`ibac-only` or `ibac:observe` canaries). The richer layer-2
-knobs are backend-supported but intentionally not exposed — the reference runs don't use them.
+**Option B (implemented):** layer 3 is now enactable over HTTP end-to-end, without the Service ever
+needing a kubeconfig. `DeployBenchmarkRequest.plugin_preset`/`plugins`/`on_error` are forwarded to the
+backend agent-create body as camelCase `pluginPreset`/`plugins`/`onError`; the backend threads them
+onto `AgentRuntime.spec`; the operator admission webhook renders the full canonical pipeline into the
+per-agent `authbridge-config-<agent>` ConfigMap (mirroring the harness `pipeline-merge.py` — preset
+membership, canonical plugin order, per-plugin `enforce|observe|off` → `on_error`, base-config
+precedence). The Service stays HTTP-only; the ConfigMap write happens operator-side on the workload
+cluster. These fields require `authbridge_enabled=true` (the sidecar must be injected for its pipeline
+to take effect) and are otherwise rejected with an actionable `422`.
 
-The layer-3 selectors (`plugin_preset`/`plugins`/`plugin_config_file`) are accepted on the deploy
-request **only to reject them with a 422** naming the ConfigMap-overlay requirement. Without this, the
-request model would silently ignore an unknown `plugin_preset` and deploy the sidecar with the default
-pipeline while the caller believed they got `ibac-only` — a silent mis-deploy the 422 converts into an
-actionable error.
+`DeployBenchmarkRequest.authbridge_enabled` (→ `authBridgeEnabled` on the agent create body) remains
+the layer-2 knob: on its own it injects the sidecar running the **cluster-default** pipeline. The
+richer layer-2 knobs (`authBridgeMode`/`mtlsMode`/`tlsBridgeEnabled`/`defaultOutboundPolicy`/
+`outboundRoutes`/ports-exclude) are backend-supported but intentionally not exposed on the deploy
+route — the reference runs don't use them.
+
+The harness `--plugin-config-file` (`plugin_config_file`) is a local filesystem path with no HTTP
+analog and stays **rejected with a 422** naming the `plugin_preset`/`plugins`/`on_error` alternative.
 
 ### Workload-provided credentials vs Service-enacted config
 

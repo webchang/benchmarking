@@ -162,6 +162,18 @@ kubectl -n team1 create secret generic hf-secret --from-literal=hf-token="$HF_TO
 kubectl -n team1 create secret generic openai-secret --from-literal=apikey="$LITELLM_KEY"
 ```
 
+> **`openai-secret` must exist before you run the Service — provision it out-of-band.**
+> On clusters where the rossoctl platform chart owns the agent namespaces (e.g. `team1`), the
+> chart only manages `openai-secret` when its Helm value `secrets.openaiApiKey` is set. Leave
+> that value **empty** and create the Secret yourself (command above / a secret manager /
+> External Secrets), so the credential lives outside Helm values and a later `helm upgrade`
+> **cannot** overwrite it with an empty key. When the value is empty the chart skips the Secret
+> entirely and its install NOTES print a `WARNING: secrets.openaiApiKey is NOT set` reminder.
+> If you instead let the chart template the key, every `helm upgrade` re-applies whatever is in
+> the release values — an empty value there silently zeroes the key mid-flight and every LLM
+> call fails until the Secret is restored and the workload pods are `rollout restart`ed (pods
+> read `apikey` via `secretKeyRef` only at startup).
+
 ### 3.4 MLflow + OTEL collector (optional, for reports)
 
 Reporting is fail-soft: if MLflow client-creds aren't configured, runs still succeed and
@@ -252,7 +264,10 @@ Request fields (`DeployBenchmarkRequest`):
 | `namespace` | `team1` | target namespace |
 | `experiment` | `default` | non-default suffixes the agent name so variants coexist |
 | `authbridge_enabled` | `false` | inject the AuthBridge sidecar with the **cluster-default** pipeline (layer-2 knob) |
-| `plugin_preset` / `plugins` / `plugin_config_file` | `null` | **rejected with `422`** — layer-3 pipeline composition needs a kubectl ConfigMap overlay the Service can't do |
+| `plugin_preset` | `null` | layer-3 preset (`auth-only`\|`ibac-only`\|`full`); forwarded to the backend as `pluginPreset` → `AgentRuntime.spec` → operator renders the per-agent pipeline. Requires `authbridge_enabled=true` |
+| `plugins` | `null` | per-plugin policy overrides as `["NAME:POLICY"]` tokens (`POLICY` = `enforce`\|`observe`\|`off`); forwarded as `plugins`. Requires `authbridge_enabled=true` |
+| `on_error` | `null` | chain-default policy (`enforce`\|`observe`\|`off`); forwarded as `onError`. Requires `authbridge_enabled=true` |
+| `plugin_config_file` | `null` | **rejected with `422`** — a local filesystem path with no HTTP analog; use `plugin_preset`/`plugins`/`on_error` instead |
 
 **Model swap** (run #4 pattern): the deploy endpoint always (re)creates the *shared* tool, so
 re-deploying with a new model 409s on the existing tool. Deploy the model-swapped agent alone
@@ -437,7 +452,8 @@ curl -s -X POST "$SVC/benchmarks/tau2/runs" -H "Authorization: Bearer $TOKEN" \
 | `iss` not in any instance file | `403` | add/repair the instance config (§3.1) |
 | `/config` as non-benchmarker | `403` | authenticate as the `benchmarker` user |
 | Setting a workload cred via `/config` | `422` | provision it as a cluster Secret instead (§3.3) |
-| `plugin_preset`/`plugins`/`plugin_config_file` on deploy | `422` | not enactable HTTP-only (needs kubectl ConfigMap overlay); use `authbridge_enabled=true` for the sidecar with the cluster-default pipeline |
+| `plugin_preset`/`plugins`/`on_error` without `authbridge_enabled=true` | `422` | set `authbridge_enabled=true` so the sidecar is injected for the pipeline to take effect |
+| `plugin_config_file` on deploy | `422` | local-path input with no HTTP analog; use `plugin_preset`/`plugins`/`on_error` instead |
 | Run before deploy | `409` | `POST …/deploy` first |
 | Run while not Ready | `424` | provision the named Secret(s), wait for Ready (§5.2) |
 | Report with MLflow unconfigured | `409` | set MLflow read creds via `PUT /config` (§3.4) |

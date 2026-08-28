@@ -1498,6 +1498,42 @@
             "type": "boolean",
             "title": "Spire Enabled",
             "default": false
+          },
+          "plugin_preset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plugin Preset"
+          },
+          "plugins": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plugins"
+          },
+          "on_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Error"
           }
         },
         "type": "object",
@@ -1701,6 +1737,17 @@
               }
             ],
             "title": "Plugins"
+          },
+          "on_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Error"
           },
           "plugin_config_file": {
             "anyOf": [
@@ -2423,6 +2470,17 @@
             "type": "number",
             "title": "Timeout Seconds",
             "default": 300.0
+          },
+          "task_timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Timeout Seconds"
           }
         },
         "type": "object",

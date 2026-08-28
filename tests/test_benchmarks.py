@@ -530,8 +530,55 @@ def test_deploy_authbridge_enabled_sets_sidecar(client, make_token, jwks_doc):
     assert agent_body["authBridgeEnabled"] is True
 
 
+def test_agent_plugin_preset_flows_to_wire():
+    defn = registry.BENCHMARKS["gsm8k"]
+    agent = registry.build_agent_request(
+        defn, "tool_calling", "team1", None, "default", None, True,
+        plugin_preset="ibac-only", plugins=["ibac:observe"], on_error="observe",
+    )
+    body = agent.to_rossoctl_body()
+    assert body["pluginPreset"] == "ibac-only"
+    assert body["plugins"] == ["ibac:observe"]
+    assert body["onError"] == "observe"
+
+
+def test_agent_no_preset_omits_plugin_fields():
+    # Absent preset fields must not appear in the wire body (backend treats them as unset).
+    defn = registry.BENCHMARKS["gsm8k"]
+    agent = registry.build_agent_request(defn, "tool_calling", "team1", None, "default")
+    body = agent.to_rossoctl_body()
+    assert "pluginPreset" not in body
+    assert "plugins" not in body
+    assert "onError" not in body
+
+
 @respx.mock
-def test_deploy_rejects_plugin_preset_422(client, make_token, jwks_doc):
+def test_deploy_plugin_preset_forwards_to_agent_wire(client, make_token, jwks_doc):
+    _mock_auth(jwks_doc)
+    respx.post(f"{ROSSOCTL_URL}/api/v1/tools").mock(return_value=httpx.Response(201, json={}))
+    agent_route = respx.post(f"{ROSSOCTL_URL}/api/v1/agents").mock(
+        return_value=httpx.Response(201, json={})
+    )
+    r = client.post(
+        "/benchmarks/gsm8k/deploy",
+        headers=_auth(make_token),
+        json={
+            "authbridge_enabled": True,
+            "plugin_preset": "ibac-only",
+            "plugins": ["ibac:observe"],
+            "on_error": "observe",
+        },
+    )
+    assert r.status_code == 201, r.text
+    agent_body = json.loads(agent_route.calls.last.request.content)
+    assert agent_body["authBridgeEnabled"] is True
+    assert agent_body["pluginPreset"] == "ibac-only"
+    assert agent_body["plugins"] == ["ibac:observe"]
+    assert agent_body["onError"] == "observe"
+
+
+@respx.mock
+def test_deploy_preset_without_authbridge_422(client, make_token, jwks_doc):
     _mock_auth(jwks_doc)
     r = client.post(
         "/benchmarks/gsm8k/deploy",
@@ -539,18 +586,19 @@ def test_deploy_rejects_plugin_preset_422(client, make_token, jwks_doc):
         json={"plugin_preset": "ibac-only"},
     )
     assert r.status_code == 422
-    assert "authbridge-config" in r.json()["detail"]
+    assert "authbridge_enabled" in r.json()["detail"]
 
 
 @respx.mock
-def test_deploy_rejects_plugins_list_422(client, make_token, jwks_doc):
+def test_deploy_rejects_plugin_config_file_422(client, make_token, jwks_doc):
     _mock_auth(jwks_doc)
     r = client.post(
         "/benchmarks/gsm8k/deploy",
         headers=_auth(make_token),
-        json={"plugins": ["ibac:observe"]},
+        json={"authbridge_enabled": True, "plugin_config_file": "/tmp/pipeline.yaml"},
     )
     assert r.status_code == 422
+    assert "plugin_config_file" in r.json()["detail"]
 
 
 @respx.mock

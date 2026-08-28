@@ -9,6 +9,13 @@
 The canonical 12 runs are the upstream harness's `deploy-and-evaluate` comparison
 (`./deploy-and-evaluate.sh --agent tool_calling`).
 
+> **Update (2026-08-28): the layer-3 `422`s below are superseded.** Runs #5/#6/#8 were rejected
+> with a `422` because, at the time, plugin-preset composition wasn't enactable over HTTP. That is
+> now implemented end-to-end via **Option B** — `plugin_preset`/`plugins`/`on_error` flow Service →
+> backend `AgentRuntime.spec` → operator webhook, which renders the per-agent
+> `authbridge-config-<agent>` pipeline. The status cells below preserve the original snapshot;
+> e2e re-runs of #5/#6/#8 under the custom preset-enabled images are tracked in Phase 4.
+
 ## Summary table
 
 | #  | Run | Status | Result / reason |

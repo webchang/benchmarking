@@ -246,6 +246,13 @@ class AgentCreateRequest(BaseModel):
     create_http_route: bool = True
     authbridge_enabled: bool = False
     spire_enabled: bool = False
+    # Layer-3 AuthBridge plugin-pipeline composition. Forwarded to the backend as
+    # camelCase `pluginPreset`/`plugins`/`onError`, which the backend threads onto the
+    # AgentRuntime.spec so the operator webhook renders the full per-agent pipeline
+    # (Option B). Only meaningful when authbridge_enabled is True.
+    plugin_preset: str | None = None
+    plugins: list[str] | None = None
+    on_error: str | None = None
 
     def to_rossoctl_body(self) -> dict:
         """Serialize to the Rossoctl POST /api/v1/agents wire shape (camelCase)."""
@@ -279,6 +286,12 @@ class AgentCreateRequest(BaseModel):
             body.update(self.resources.to_rossoctl_fields())
         if self.image_pull_policy is not None:
             body["imagePullPolicy"] = self.image_pull_policy
+        if self.plugin_preset is not None:
+            body["pluginPreset"] = self.plugin_preset
+        if self.plugins is not None:
+            body["plugins"] = self.plugins
+        if self.on_error is not None:
+            body["onError"] = self.on_error
         return body
 
 
@@ -349,12 +362,18 @@ class DeployBenchmarkRequest(BaseModel):
     # Layer-2 AuthBridge knob the Service CAN enact over HTTP: injects the sidecar with the
     # cluster-default pipeline (emitted as `authBridgeEnabled` in the agents POST).
     authbridge_enabled: bool = False
-    # Layer-3 plugin-pipeline composition (harness `--plugin-preset`/`--plugin NAME:POLICY`/
-    # `--plugin-config-file`). NOT enactable here: it needs a kubectl overlay of the per-agent
-    # `authbridge-config-<agent>` ConfigMap, which the HTTP-only Service cannot do. Accepted only
-    # so the deploy route can reject them with an actionable 422 instead of silently ignoring them.
+    # Layer-3 plugin-pipeline composition (harness `--plugin-preset`/`--plugin NAME:POLICY`).
+    # Now enactable over HTTP (Option B): forwarded to the backend as pluginPreset/plugins/onError,
+    # threaded onto AgentRuntime.spec, and rendered by the operator webhook into the per-agent
+    # `authbridge-config-<agent>` ConfigMap. Requires authbridge_enabled=true to have any effect.
+    #   - plugin_preset: "auth-only" | "ibac-only" | "full"
+    #   - plugins: per-plugin policy overrides as "NAME:POLICY" tokens (POLICY = enforce|observe|off)
+    #   - on_error: chain-default policy (enforce|observe|off)
     plugin_preset: str | None = None
     plugins: list[str] | None = None
+    on_error: str | None = None
+    # The harness `--plugin-config-file` is a local filesystem path with no clean HTTP analog, so
+    # it stays rejected with a focused 422 (see the deploy route).
     plugin_config_file: str | None = None
 
 

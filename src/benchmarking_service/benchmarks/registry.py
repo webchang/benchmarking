@@ -205,6 +205,9 @@ def build_agent_request(
     otel: WorkloadOTELConfig | None = None,
     authbridge_enabled: bool = False,
     llm: WorkloadLLMConfig | None = None,
+    plugin_preset: str | None = None,
+    plugins: list[str] | None = None,
+    on_error: str | None = None,
 ) -> AgentCreateRequest:
     spec = defn.agents[agent]
     resolved_model = _resolve_model(defn, model, llm)
@@ -227,6 +230,9 @@ def build_agent_request(
         service_ports=[ServicePort(port=8080, target_port=8000)],
         resources=spec.resources,
         authbridge_enabled=authbridge_enabled,
+        plugin_preset=plugin_preset,
+        plugins=plugins,
+        on_error=on_error,
     )
 
 
