@@ -1548,11 +1548,6 @@ components:
           type: string
           title: Agent
           default: tool_calling
-        model:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Model
         namespace:
           type: string
           title: Namespace

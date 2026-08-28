@@ -406,7 +406,10 @@ class RunStatus(str, Enum):
 
 class RunRequest(BaseModel):
     agent: str = "tool_calling"
-    model: str | None = None
+    # NOTE: there is deliberately no `model` field here. The agent's LLM is bound at DEPLOY
+    # time (baked into the workload as LLM_MODEL via DeployBenchmarkRequest.model); a run only
+    # invokes the already-deployed agent over A2A and cannot re-point its model. To switch
+    # models, redeploy. A `model` on the run request would be inert, so it is not accepted.
     namespace: str = "team1"
     experiment: str = "default"
     max_tasks: int = 1
