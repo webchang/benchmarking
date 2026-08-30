@@ -476,6 +476,10 @@ class MLflowTraceRecord(BaseModel):
     """
 
     session_id: str
+    # Benchmark task this trace ran (one Agent.Session == one task). None for traces
+    # emitted before task_id was recorded on the span. Lets tokens/latency be attributed
+    # to a named task, not just an opaque session_id.
+    task_id: str | None = None
     agent_name: str
     benchmark_name: str
     model: str

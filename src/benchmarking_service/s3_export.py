@@ -4,7 +4,11 @@ Each run's records (the same `MLflowTraceRecord`s the report API returns) are wr
 NDJSON (streaming-friendly) and Parquet (analytics-friendly), plus a `run.json` summary, under a
 hierarchical key so cross-service data groups naturally:
 
-    <prefix>/<requester>/<source>/<benchmark>/<run_id>/{run.json,report.ndjson,report.parquet}
+    <prefix>/<requester>/<source>/<benchmark>/<run_id>/
+        {run.json,report.ndjson,report.parquet,token_report.ndjson,token_report.parquet}
+
+`token_report.*` is a lean per-task token-utilization view (one row per benchmark task) projected
+from the full records — the go-to artifact for token accounting.
 
 - requester: the benchmarking caller's `preferred_username` (top level).
 - source:    the Service's benchmarker `iss`, encoded — distinguishes each Service in use.
@@ -63,6 +67,39 @@ def _ndjson_bytes(rows: list[dict]) -> bytes:
     return "".join(json.dumps(r, separators=(",", ":")) + "\n" for r in rows).encode("utf-8")
 
 
+# Lean per-task token-utilization projection: one row per benchmark task (one Agent.Session
+# trace == one task), keyed by task_id/session_id, carrying just the token + outcome columns an
+# analyst needs — instead of the ~40-field MLflowTraceRecord. `report.ndjson` still holds the full
+# records; this is the focused token view exported alongside it.
+_TOKEN_KEYS = (
+    "task_id",
+    "session_id",
+    "benchmark_name",
+    "agent_name",
+    "model",
+    "num_parallel",
+    "experiment_name",
+    "status",
+    "start_time",
+    "llm_count",
+    "llm_input_tokens",
+    "llm_output_tokens",
+)
+
+
+def _token_rows(record_dicts: list[dict]) -> list[dict]:
+    """Project full trace records to per-task token rows (adds passed + total tokens)."""
+    rows: list[dict] = []
+    for r in record_dicts:
+        row = {k: r.get(k) for k in _TOKEN_KEYS}
+        row["passed"] = r.get("evaluation_result")
+        row["llm_total_tokens"] = int(r.get("llm_input_tokens", 0) or 0) + int(
+            r.get("llm_output_tokens", 0) or 0
+        )
+        rows.append(row)
+    return rows
+
+
 def _parquet_bytes(rows: list[dict]) -> bytes:
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -106,13 +143,18 @@ def _export_sync(
     run_summary: dict,
 ) -> list[RunArtifact]:
     client = _make_client(cfg)
+    token_dicts = _token_rows(record_dicts)
     planned: list[tuple[str, str, bytes]] = [
         ("run.json", "json", json.dumps(run_summary, separators=(",", ":")).encode("utf-8")),
         ("report.ndjson", "ndjson", _ndjson_bytes(record_dicts)),
+        # Lean per-task token-utilization report (one row per task); analysts read this
+        # instead of wading through the full trace records for token accounting.
+        ("token_report.ndjson", "ndjson", _ndjson_bytes(token_dicts)),
     ]
     # Parquet needs a schema, which we infer from the rows — skip it when there are no records.
     if record_dicts:
         planned.append(("report.parquet", "parquet", _parquet_bytes(record_dicts)))
+        planned.append(("token_report.parquet", "parquet", _parquet_bytes(token_dicts)))
 
     _ctype = {
         "json": "application/json",

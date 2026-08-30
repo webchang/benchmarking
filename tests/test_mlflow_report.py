@@ -58,6 +58,7 @@ def _full_trace():
             base + 1_700_000_000,  # 1.7s
             attrs={
                 "metadata.session_id": "sess-t1",
+                "metadata.task_id": "t1",
                 "metadata.agent_name": "exgentic-a2a-tool-calling-gsm8k",
                 "metadata.benchmark_name": "gsm8k",
                 "metadata.experiment_name": "default",
@@ -89,6 +90,7 @@ def _full_trace():
 def test_parse_traces_extracts_timing_tokens_infra_eval():
     [rec] = mlflow_report.parse_traces(_full_trace()["traces"])
     assert rec.session_id == "sess-t1"
+    assert rec.task_id == "t1"
     assert rec.benchmark_name == "gsm8k"
     assert rec.num_parallel == 1
     assert rec.total_latency_s == 1.7

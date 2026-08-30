@@ -63,6 +63,12 @@ async def test_emits_agent_session_trace_with_children_and_metadata(tracing):
         assert s.attributes["metadata.num_parallel_tasks"] == 2
         assert s.attributes["metadata.experiment_name"] == "exp1"
 
+    # Each session trace is keyed to its benchmark task_id (t1/t2 -> sess-t1/sess-t2).
+    assert {s.attributes["metadata.task_id"] for s in sessions} == {"t1", "t2"}
+    by_task = {s.attributes["metadata.task_id"]: s for s in sessions}
+    assert by_task["t1"].attributes["metadata.session_id"] == "sess-t1"
+    assert by_task["t2"].attributes["metadata.session_id"] == "sess-t2"
+
     by_sid = {s.attributes["metadata.session_id"]: s for s in sessions}
     assert set(by_sid) == {"sess-t1", "sess-t2"}
     assert by_sid["sess-t1"].attributes["metadata.evaluation_result"] is True

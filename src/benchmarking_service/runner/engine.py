@@ -37,6 +37,11 @@ async def _run_task(task_id: str, mcp, a2a, tracer=None, meta: dict | None = Non
     started = time.monotonic()
     meta = meta or {}
     with _span(tracer, "Agent.Session") as root:
+        # task_id keys each per-task trace to the benchmark task (one Agent.Session == one
+        # task), so the parsed record's tokens/latency can be attributed to a named task —
+        # not just an opaque session_id. It's known up front, unlike session_id (set post
+        # create_session below).
+        _set(root, "metadata.task_id", task_id)
         _set(root, "metadata.agent_name", meta.get("agent_name"))
         _set(root, "metadata.benchmark_name", meta.get("benchmark_name"))
         _set(root, "metadata.num_parallel_tasks", meta.get("num_parallel_tasks"))

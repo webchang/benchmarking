@@ -31,6 +31,7 @@ def _records(n=2):
     return [
         MLflowTraceRecord(
             session_id=f"sess-{i}",
+            task_id=f"t{i}",
             agent_name="exgentic-a2a-tool-calling-gsm8k",
             benchmark_name="gsm8k",
             model="openai/x",
@@ -38,6 +39,8 @@ def _records(n=2):
             status="OK",
             total_latency_s=1.5,
             evaluation_result=True,
+            llm_input_tokens=100 + i,
+            llm_output_tokens=20 + i,
         )
         for i in range(n)
     ]
@@ -86,7 +89,7 @@ def test_parquet_bytes_roundtrip():
     assert table.column("session_id").to_pylist() == ["s1", "s2"]
 
 
-async def test_export_run_uploads_all_three_formats(monkeypatch):
+async def test_export_run_uploads_all_formats(monkeypatch):
     fake = _FakeS3Client()
     _install_client(monkeypatch, fake)
     cfg = S3Config(bucket="bench-bkt", prefix="p")
@@ -100,7 +103,13 @@ async def test_export_run_uploads_all_three_formats(monkeypatch):
         run_summary={"run_id": "run-1", "status": "succeeded"},
     )
     names = {a.name for a in artifacts}
-    assert names == {"run.json", "report.ndjson", "report.parquet"}
+    assert names == {
+        "run.json",
+        "report.ndjson",
+        "report.parquet",
+        "token_report.ndjson",
+        "token_report.parquet",
+    }
     # Every object went under the expected hierarchical prefix, public-read.
     for put in fake.puts:
         assert put["Bucket"] == "bench-bkt"
@@ -112,9 +121,37 @@ async def test_export_run_uploads_all_three_formats(monkeypatch):
     ndjson = next(p["Body"] for p in fake.puts if p["Key"].endswith("report.ndjson"))
     assert len(ndjson.decode().splitlines()) == 2
     # Artifact refs carry a usable url + size.
-    parquet = next(a for a in artifacts if a.format == "parquet")
+    parquet = next(a for a in artifacts if a.name == "report.parquet")
     assert parquet.size_bytes > 0
     assert parquet.url.endswith("/report.parquet")
+
+
+async def test_token_report_is_lean_per_task_view(monkeypatch):
+    fake = _FakeS3Client()
+    _install_client(monkeypatch, fake)
+    await s3_export.export_run(
+        S3Config(bucket="b"),
+        preferred_username="alice",
+        source_iss=ISS,
+        benchmark="gsm8k",
+        run_id="run-tok",
+        records=_records(2),
+        run_summary={"run_id": "run-tok"},
+    )
+    body = next(p["Body"] for p in fake.puts if p["Key"].endswith("token_report.ndjson"))
+    rows = [json.loads(x) for x in body.decode().splitlines()]
+    assert len(rows) == 2
+    r0 = rows[0]
+    # Keyed to the benchmark task, carries tokens (incl. computed total) + outcome, and stays lean.
+    assert r0["task_id"] == "t0"
+    assert r0["session_id"] == "sess-0"
+    assert r0["llm_input_tokens"] == 100
+    assert r0["llm_output_tokens"] == 20
+    assert r0["llm_total_tokens"] == 120
+    assert r0["passed"] is True
+    # The full-record-only fields (timing/infra) are projected away.
+    assert "total_latency_s" not in r0
+    assert "mcp_cpu_utilization_pct" not in r0
 
 
 async def test_export_run_skips_parquet_when_no_records(monkeypatch):
@@ -130,7 +167,8 @@ async def test_export_run_skips_parquet_when_no_records(monkeypatch):
         run_summary={"run_id": "run-2"},
     )
     names = {a.name for a in artifacts}
-    assert names == {"run.json", "report.ndjson"}  # no parquet without a schema
+    # No parquet without a schema; both NDJSON reports still export (empty).
+    assert names == {"run.json", "report.ndjson", "token_report.ndjson"}
 
 
 async def test_export_run_retries_without_acl_when_rejected(monkeypatch):
@@ -145,7 +183,7 @@ async def test_export_run_retries_without_acl_when_rejected(monkeypatch):
         records=_records(1),
         run_summary={"run_id": "run-3"},
     )
-    assert len(artifacts) == 3
+    assert len(artifacts) == 5
     # The successful (retried) puts carry no ACL.
     assert all("ACL" not in p for p in fake.puts)
 

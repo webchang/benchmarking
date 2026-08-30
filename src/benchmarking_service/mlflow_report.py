@@ -219,6 +219,7 @@ def parse_traces(traces: list[dict]) -> list[MLflowTraceRecord]:
 
         record = MLflowTraceRecord(
             session_id=meta.get("session_id", "unknown"),
+            task_id=meta.get("task_id"),
             agent_name=meta.get("agent_name", "unknown"),
             benchmark_name=meta.get("benchmark_name", "unknown"),
             model=model,
