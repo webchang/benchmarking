@@ -325,9 +325,9 @@ def test_run_exports_artifacts_to_s3_on_completion(tmp_path, make_token, jwks_do
             data = c.get(f"/benchmarks/gsm8k/runs/{run_id}", headers=headers).json()
 
     # The instance's MLflow has no client creds, so the export read yields no records ->
-    # run.json + the two NDJSON reports (no parquet without a schema).
+    # run.json + the two NDJSON reports (no parquet without a schema) + the manifest.
     names = {a["name"] for a in data["artifacts"]}
-    assert names == {"run.json", "report.ndjson", "token_report.ndjson"}
+    assert names == {"run.json", "report.ndjson", "token_report.ndjson", "manifest.json"}
     assert data["artifacts_prefix"].startswith("runs/alice/")
     assert data["artifacts_prefix"].endswith(f"/gsm8k/{run_id}")
     for put in fake.puts:

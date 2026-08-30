@@ -109,6 +109,7 @@ async def test_export_run_uploads_all_formats(monkeypatch):
         "report.parquet",
         "token_report.ndjson",
         "token_report.parquet",
+        "manifest.json",
     }
     # Every object went under the expected hierarchical prefix, public-read.
     for put in fake.puts:
@@ -154,6 +155,40 @@ async def test_token_report_is_lean_per_task_view(monkeypatch):
     assert "mcp_cpu_utilization_pct" not in r0
 
 
+async def test_manifest_indexes_every_data_object(monkeypatch):
+    fake = _FakeS3Client()
+    _install_client(monkeypatch, fake)
+    artifacts = await s3_export.export_run(
+        S3Config(bucket="b", prefix="p"),
+        preferred_username="alice",
+        source_iss=ISS,
+        benchmark="gsm8k",
+        run_id="run-man",
+        records=_records(2),
+        run_summary={"run_id": "run-man"},
+    )
+    body = next(p["Body"] for p in fake.puts if p["Key"].endswith("manifest.json"))
+    manifest = json.loads(body)
+    assert manifest["run_id"] == "run-man"
+    assert manifest["benchmark"] == "gsm8k"
+    assert manifest["prefix"].endswith("/gsm8k/run-man")
+    # The manifest indexes every data object with a usable key/url/size, but not itself.
+    listed = {a["name"] for a in manifest["artifacts"]}
+    assert listed == {
+        "run.json",
+        "report.ndjson",
+        "report.parquet",
+        "token_report.ndjson",
+        "token_report.parquet",
+    }
+    for a in manifest["artifacts"]:
+        assert a["key"] == f"{manifest['prefix']}/{a['name']}"
+        assert a["url"].endswith(f"/{a['name']}")
+        assert a["size_bytes"] > 0
+    # The manifest object itself is still returned as an artifact so a client can find it.
+    assert any(a.name == "manifest.json" for a in artifacts)
+
+
 async def test_export_run_skips_parquet_when_no_records(monkeypatch):
     fake = _FakeS3Client()
     _install_client(monkeypatch, fake)
@@ -167,8 +202,8 @@ async def test_export_run_skips_parquet_when_no_records(monkeypatch):
         run_summary={"run_id": "run-2"},
     )
     names = {a.name for a in artifacts}
-    # No parquet without a schema; both NDJSON reports still export (empty).
-    assert names == {"run.json", "report.ndjson", "token_report.ndjson"}
+    # No parquet without a schema; both NDJSON reports still export (empty), plus the manifest.
+    assert names == {"run.json", "report.ndjson", "token_report.ndjson", "manifest.json"}
 
 
 async def test_export_run_retries_without_acl_when_rejected(monkeypatch):
@@ -183,7 +218,7 @@ async def test_export_run_retries_without_acl_when_rejected(monkeypatch):
         records=_records(1),
         run_summary={"run_id": "run-3"},
     )
-    assert len(artifacts) == 5
+    assert len(artifacts) == 6
     # The successful (retried) puts carry no ACL.
     assert all("ACL" not in p for p in fake.puts)
 

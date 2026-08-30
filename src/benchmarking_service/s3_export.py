@@ -5,10 +5,12 @@ NDJSON (streaming-friendly) and Parquet (analytics-friendly), plus a `run.json` 
 hierarchical key so cross-service data groups naturally:
 
     <prefix>/<requester>/<source>/<benchmark>/<run_id>/
-        {run.json,report.ndjson,report.parquet,token_report.ndjson,token_report.parquet}
+        {run.json,report.ndjson,report.parquet,token_report.ndjson,token_report.parquet,manifest.json}
 
 `token_report.*` is a lean per-task token-utilization view (one row per benchmark task) projected
-from the full records — the go-to artifact for token accounting.
+from the full records — the go-to artifact for token accounting. `manifest.json` is a self-describing
+index of every data object at the run prefix (name/format/key/url/size_bytes) — one fetch to
+discover the whole run without an S3 listing.
 
 - requester: the benchmarking caller's `preferred_username` (top level).
 - source:    the Service's benchmarker `iss`, encoded — distinguishes each Service in use.
@@ -135,10 +137,19 @@ def _put(client, bucket: str, key: str, body: bytes, content_type: str, public_r
         client.put_object(Bucket=bucket, Key=key, Body=body, **extra)
 
 
+_CTYPE = {
+    "json": "application/json",
+    "ndjson": "application/x-ndjson",
+    "parquet": "application/vnd.apache.parquet",
+}
+
+
 def _export_sync(
     cfg: S3Config,
     *,
     prefix: str,
+    run_id: str,
+    benchmark: str,
     record_dicts: list[dict],
     run_summary: dict,
 ) -> list[RunArtifact]:
@@ -156,20 +167,33 @@ def _export_sync(
         planned.append(("report.parquet", "parquet", _parquet_bytes(record_dicts)))
         planned.append(("token_report.parquet", "parquet", _parquet_bytes(token_dicts)))
 
-    _ctype = {
-        "json": "application/json",
-        "ndjson": "application/x-ndjson",
-        "parquet": "application/vnd.apache.parquet",
-    }
+    def _ref(name: str, fmt: str, body: bytes) -> RunArtifact:
+        key = f"{prefix}/{name}"
+        return RunArtifact(
+            name=name, format=fmt, key=key, url=_object_url(cfg, key), size_bytes=len(body)
+        )
+
+    # Every data object's key/url/size is known before upload, so enumerate them into a
+    # self-describing manifest and write it last. The manifest does NOT list itself (its own
+    # size depends on its contents); the run/report API response's `artifacts` array does
+    # include manifest.json so a client discovers it too.
+    data_refs = [_ref(name, fmt, body) for name, fmt, body in planned]
+    manifest_body = json.dumps(
+        {
+            "run_id": run_id,
+            "benchmark": benchmark,
+            "prefix": prefix,
+            "artifacts": [r.model_dump(mode="json") for r in data_refs],
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    planned.append(("manifest.json", "json", manifest_body))
+
     artifacts: list[RunArtifact] = []
     for name, fmt, body in planned:
-        key = f"{prefix}/{name}"
-        _put(client, cfg.bucket, key, body, _ctype[fmt], cfg.public_read)
-        artifacts.append(
-            RunArtifact(
-                name=name, format=fmt, key=key, url=_object_url(cfg, key), size_bytes=len(body)
-            )
-        )
+        ref = _ref(name, fmt, body)
+        _put(client, cfg.bucket, ref.key, body, _CTYPE[fmt], cfg.public_read)
+        artifacts.append(ref)
     return artifacts
 
 
@@ -191,5 +215,11 @@ async def export_run(
     prefix = run_prefix(cfg, preferred_username, source_iss, benchmark, run_id)
     record_dicts = [r.model_dump(mode="json") for r in records]
     return await asyncio.to_thread(
-        _export_sync, cfg, prefix=prefix, record_dicts=record_dicts, run_summary=run_summary
+        _export_sync,
+        cfg,
+        prefix=prefix,
+        run_id=run_id,
+        benchmark=benchmark,
+        record_dicts=record_dicts,
+        run_summary=run_summary,
     )
