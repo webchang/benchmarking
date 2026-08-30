@@ -265,7 +265,13 @@ BENCHMARKS: dict[str, BenchmarkDefinition] = {
                     EnvVar(name="OPENAI_API_BASE", value=_LITELLM_BASE_URL),
                     EnvVar(name="LLM_API_BASE", value=_LITELLM_BASE_URL),
                     EnvVar(name="EXGENTIC_SET_AGENT_ENABLE_TOOL_SHORTLISTING", value="true"),
-                    EnvVar(name="EXGENTIC_DEFAULT_RUNNER", value="thread"),
+                    # `direct` (in-process), not `thread`: exgentic's OTEL trace context is a single
+                    # ContextVar that a worker thread doesn't inherit, so under `thread` the litellm
+                    # callback fires with no context and the token-bearing `chat` LLM spans
+                    # (gen_ai.usage.*) crash in _get_parent_context — reports come back with 0 tokens.
+                    # `direct` keeps the LLM call on the same context so those spans emit and join the
+                    # Agent.Session trace. (The benchmark/MCP side already runs `direct`.)
+                    EnvVar(name="EXGENTIC_DEFAULT_RUNNER", value="direct"),
                     EnvVar(name="LITELLM_LOCAL_MODEL_COST_MAP", value="True"),
                 ],
                 resources=_AGENT_RESOURCES,
@@ -295,7 +301,13 @@ BENCHMARKS: dict[str, BenchmarkDefinition] = {
                     EnvVar(name="OPENAI_API_BASE", value=_LITELLM_BASE_URL),
                     EnvVar(name="LLM_API_BASE", value=_LITELLM_BASE_URL),
                     EnvVar(name="EXGENTIC_SET_AGENT_ENABLE_TOOL_SHORTLISTING", value="true"),
-                    EnvVar(name="EXGENTIC_DEFAULT_RUNNER", value="thread"),
+                    # `direct` (in-process), not `thread`: exgentic's OTEL trace context is a single
+                    # ContextVar that a worker thread doesn't inherit, so under `thread` the litellm
+                    # callback fires with no context and the token-bearing `chat` LLM spans
+                    # (gen_ai.usage.*) crash in _get_parent_context — reports come back with 0 tokens.
+                    # `direct` keeps the LLM call on the same context so those spans emit and join the
+                    # Agent.Session trace. (The benchmark/MCP side already runs `direct`.)
+                    EnvVar(name="EXGENTIC_DEFAULT_RUNNER", value="direct"),
                     EnvVar(name="LITELLM_LOCAL_MODEL_COST_MAP", value="True"),
                 ],
                 resources=_AGENT_RESOURCES,
@@ -337,7 +349,13 @@ BENCHMARKS: dict[str, BenchmarkDefinition] = {
                     EnvVar(name="OPENAI_API_BASE", value=_LITELLM_BASE_URL),
                     EnvVar(name="LLM_API_BASE", value=_LITELLM_BASE_URL),
                     EnvVar(name="EXGENTIC_SET_AGENT_ENABLE_TOOL_SHORTLISTING", value="true"),
-                    EnvVar(name="EXGENTIC_DEFAULT_RUNNER", value="thread"),
+                    # `direct` (in-process), not `thread`: exgentic's OTEL trace context is a single
+                    # ContextVar that a worker thread doesn't inherit, so under `thread` the litellm
+                    # callback fires with no context and the token-bearing `chat` LLM spans
+                    # (gen_ai.usage.*) crash in _get_parent_context — reports come back with 0 tokens.
+                    # `direct` keeps the LLM call on the same context so those spans emit and join the
+                    # Agent.Session trace. (The benchmark/MCP side already runs `direct`.)
+                    EnvVar(name="EXGENTIC_DEFAULT_RUNNER", value="direct"),
                     EnvVar(name="LITELLM_LOCAL_MODEL_COST_MAP", value="True"),
                 ],
                 resources=_AGENT_RESOURCES,
