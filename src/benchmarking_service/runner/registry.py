@@ -9,8 +9,22 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from ..models import RunRequest, RunState
+
+
+def _new_run_id() -> str:
+    """Timestamped run id: `YYYYMMDDHHMMSS-<8 hex>` in UTC.
+
+    The leading UTC timestamp makes run ids sort chronologically (both in listings
+    and as S3 key path segments) and self-date at a glance; the random hex suffix
+    keeps them collision-safe for runs started within the same second. The id is an
+    opaque string everywhere downstream (registry key, S3 prefix, API response), so
+    the format is free to change.
+    """
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    return f"{ts}-{uuid.uuid4().hex[:8]}"
 
 
 @dataclass
@@ -25,7 +39,7 @@ class RunRegistry:
         self._entries: dict[str, _Entry] = {}
 
     def create(self, *, benchmark: str, req: RunRequest, iss: str) -> RunState:
-        run_id = uuid.uuid4().hex
+        run_id = _new_run_id()
         state = RunState(
             run_id=run_id,
             benchmark=benchmark,

@@ -282,3 +282,13 @@ def test_run_registry_tenant_isolation():
     assert reg.list(benchmark="gsm8k", iss="iss-A") == [run]
     assert reg.list(benchmark="gsm8k", iss="iss-B") == []
     assert reg.list(benchmark="other", iss="iss-A") == []
+
+
+def test_run_id_is_timestamped():
+    import re
+
+    reg = RunRegistry()
+    ids = {reg.create(benchmark="gsm8k", req=RunRequest(), iss="iss-A").run_id for _ in range(5)}
+    # `YYYYMMDDHHMMSS-<8 hex>`, UTC, chronologically sortable, collision-safe.
+    assert all(re.fullmatch(r"\d{14}-[0-9a-f]{8}", rid) for rid in ids)
+    assert len(ids) == 5  # random suffix keeps same-second runs distinct
