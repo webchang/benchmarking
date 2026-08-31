@@ -83,6 +83,42 @@ curl -sS -o /dev/null -w '' -X PUT -H "Authorization: Bearer $ATOK" -H 'Content-
   "$KC_SERVER/admin/realms/$REALM/users/$USER_ID" \
   -d "{\"firstName\":\"Bench\",\"lastName\":\"Marker\",\"email\":\"${BENCH_EMAIL}\",\"emailVerified\":true,\"requiredActions\":[]}"
 echo "==> user profile patched (firstName/lastName/email)"
+# The realm import does NOT grant benchmarker the operator role, but every Service call that
+# creates workloads needs it: POST /api/v1/tools otherwise 403s "Required role(s):
+# rossoctl-operator" and the Service surfaces that as a 502 on /deploy. Grant it idempotently
+# (re-POSTing an existing mapping is a no-op).
+BENCH_ROLE="${BENCH_ROLE:-rossoctl-operator}"
+ROLE_JSON="$(curl -sS -H "Authorization: Bearer $ATOK" \
+  "$KC_SERVER/admin/realms/$REALM/roles/$BENCH_ROLE")"
+if [ -n "$ROLE_JSON" ] && [ "$(printf '%s' "$ROLE_JSON" | jq -r '.id // empty')" != "" ]; then
+  curl -sS -o /dev/null -X POST -H "Authorization: Bearer $ATOK" -H 'Content-Type: application/json' \
+    "$KC_SERVER/admin/realms/$REALM/users/$USER_ID/role-mappings/realm" -d "[${ROLE_JSON}]"
+  echo "==> granted realm role '$BENCH_ROLE' to '$BENCH_USER'"
+else
+  echo "WARNING: realm role '$BENCH_ROLE' not found in realm '$REALM' — /deploy will 502 with a 403" >&2
+fi
+
+# --- 2b. workload secrets the benchmarks reference by name ---
+# registry.py injects HF_TOKEN from secret `hf-secret` (key `hf-token`) and OPENAI_API_KEY from
+# `openai-secret` (key `apikey`). A MISSING secret is fatal: the MCP pod sits in
+# CreateContainerConfigError ("secret \"hf-secret\" not found") and the agent then crash-loops
+# unable to reach it. hf-token is EMPTY on ykt2 too (the gsm8k dataset is public) — the secret
+# only has to exist. The LLM key is real and must be supplied out-of-band: export
+# OPENAI_API_KEY, else it is left untouched (an existing empty apikey means every run 401s).
+for ns in team1 team2; do
+  kubectl --context "$CTX" -n "$ns" create secret generic hf-secret \
+    --from-literal=hf-token="" --dry-run=client -o yaml | kubectl --context "$CTX" apply -f - >/dev/null
+  echo "==> hf-secret ensured in $ns"
+  if [ -n "${OPENAI_API_KEY:-}" ]; then
+    kubectl --context "$CTX" -n "$ns" patch secret openai-secret --type merge \
+      -p "{\"data\":{\"apikey\":\"$(printf '%s' "$OPENAI_API_KEY" | base64)\"}}" >/dev/null 2>&1 \
+      && echo "==> openai-secret apikey set in $ns" \
+      || echo "WARNING: could not patch openai-secret in $ns" >&2
+  fi
+done
+if [ -z "${OPENAI_API_KEY:-}" ]; then
+  echo "NOTE: OPENAI_API_KEY unset — team1/team2 openai-secret left as-is; runs 401 if it is empty." >&2
+fi
 
 # --- 3. generate per-instance config + (re)create the benchmarking-instances secret ---
 echo "==> generating instance config + secret"
