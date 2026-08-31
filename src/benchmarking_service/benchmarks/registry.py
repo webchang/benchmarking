@@ -36,8 +36,19 @@ def _secret_env(name: str, secret: str, key: str) -> EnvVar:
 def _resolve_model(
     defn: "BenchmarkDefinition", model: str | None, llm: WorkloadLLMConfig | None
 ) -> str:
-    """Effective model: explicit run/deploy model > instance default > benchmark default."""
-    return model or (llm.default_model if llm else None) or defn.default_model
+    """Effective model, highest precedence first: explicit run/deploy model > benchmark
+    `model_override` > instance default > benchmark `default_model`.
+
+    `model_override` sits ABOVE the instance default so a benchmark can pin a model it needs
+    (e.g. tau2 -> claude-sonnet-5) without changing the instance-wide default that every other
+    benchmark inherits — while an explicit per-run/deploy model still wins over everything.
+    """
+    return (
+        model
+        or defn.model_override
+        or (llm.default_model if llm else None)
+        or defn.default_model
+    )
 
 
 def _apply_llm(
@@ -86,6 +97,9 @@ class BenchmarkDefinition(BaseModel):
     tool_env: list[EnvVar] = Field(default_factory=list)
     tool_resources: AgentResources | None = None
     default_model: str = "openai/Qwen3.6-35B-A3B"
+    # Benchmark-scoped model pin that beats the instance default but yields to an explicit
+    # run/deploy model (see `_resolve_model`). None = inherit the instance/benchmark default.
+    model_override: str | None = None
     # Multi-turn benchmarks (e.g. tau2) run a user-simulator LLM server-side in the MCP pod; it
     # needs the simulator model injected as env. gsm8k (single-turn) leaves this false.
     user_simulator: bool = False
@@ -244,6 +258,13 @@ _AGENT_RESOURCES = AgentResources(
     requests=ResourceQuantities(cpu="500m", memory="512Mi"),
     limits=ResourceQuantities(cpu="4", memory="2Gi"),
 )
+# appworld episodes run a large multi-app sandbox; at the shared 2Gi limit the agent pod was
+# OOMKilled (exit 137 -> "HTTP 503 peer closed connection"), so almost no task reached eval.
+# 8Gi eliminated the OOM/503 class entirely (validated 2026-08-31: OOM gone, completions doubled).
+_APPWORLD_AGENT_RESOURCES = AgentResources(
+    requests=ResourceQuantities(cpu="500m", memory="1Gi"),
+    limits=ResourceQuantities(cpu="4", memory="8Gi"),
+)
 
 BENCHMARKS: dict[str, BenchmarkDefinition] = {
     "gsm8k": BenchmarkDefinition(
@@ -293,6 +314,11 @@ BENCHMARKS: dict[str, BenchmarkDefinition] = {
         ],
         # Multi-turn: the MCP pod runs a user-simulator LLM (model injected by build_tool_request).
         user_simulator=True,
+        # claude-sonnet-5 is strong AND fast here: it triples the pass rate over the instance
+        # default gpt-5-mini (0.1 -> 0.30, 0 errors, all 10 tasks completed) without the timeout
+        # regression seen with the slower reasoning model gpt-5 (6/10 "timed out"). Validated
+        # 2026-08-31. Beats the instance default but an explicit per-run model still overrides it.
+        model_override="openai/aws/claude-sonnet-5",
         tool_resources=_TOOL_RESOURCES,
         agents={
             # tool_calling agent is benchmark-agnostic (same image as gsm8k); only its name gets
@@ -366,8 +392,12 @@ BENCHMARKS: dict[str, BenchmarkDefinition] = {
                     # `service` is the runner that explicitly bridges thread → context.
                     EnvVar(name="EXGENTIC_DEFAULT_RUNNER", value="service"),
                     EnvVar(name="LITELLM_LOCAL_MODEL_COST_MAP", value="True"),
+                    # appworld sandbox exec (create_session/step) can exceed the default 60s
+                    # outbound MCP timeout; when it does the agent turn fails "Error: timed out"
+                    # and the A2A task is marked failed. 300s lets long sandbox turns complete.
+                    EnvVar(name="EXGENTIC_MCP_TIMEOUT_SECONDS", value="300"),
                 ],
-                resources=_AGENT_RESOURCES,
+                resources=_APPWORLD_AGENT_RESOURCES,
             ),
         },
     ),

@@ -97,11 +97,14 @@ def test_tau2_tool_wire_carries_flat_resource_limits():
     assert body["k8sResourceRequests"]["memory"] == "512Mi"
 
 
-def test_tau2_simulator_model_defaults_when_unset():
+def test_tau2_simulator_model_uses_override_when_unset():
+    # With no run/instance model, tau2's benchmark `model_override` (claude-sonnet-5) is the
+    # resolved model, and the user-simulator tracks it. (model_override beats defn.default_model.)
     defn = registry.BENCHMARKS["tau2"]
+    assert defn.model_override == "openai/aws/claude-sonnet-5"
     tool = registry.build_tool_request(defn, "team1")
     tool_env = {e.name: e.value for e in tool.env_vars if e.value is not None}
-    assert tool_env["EXGENTIC_SET_BENCHMARK_USER_SIMULATOR_MODEL"] == defn.default_model
+    assert tool_env["EXGENTIC_SET_BENCHMARK_USER_SIMULATOR_MODEL"] == defn.model_override
 
 
 def test_tau2_agent_name_and_image_shared():
@@ -277,8 +280,13 @@ def test_tool_workload_llm_overrides_base_and_simulator_model():
     assert "LLM_API_BASE" not in names
     env = {e.name: e.value for e in tool.env_vars if e.value is not None}
     assert env["OPENAI_API_BASE"] == "https://ete-litellm.example.vpc/v1"
-    # Simulator model uses the instance default when no explicit model is passed.
-    assert env["EXGENTIC_SET_BENCHMARK_USER_SIMULATOR_MODEL"] == "openai/Azure/gpt-5-mini-2025-08-07"
+    # tau2 pins model_override (claude-sonnet-5), which beats the instance default, so the
+    # simulator model is the override — NOT the instance gpt-5-mini.
+    assert env["EXGENTIC_SET_BENCHMARK_USER_SIMULATOR_MODEL"] == "openai/aws/claude-sonnet-5"
+    # ...but an explicit per-run model still wins over the benchmark override.
+    tool_explicit = registry.build_tool_request(defn, "team1", "openai/Azure/gpt-4.1", llm)
+    env_explicit = {e.name: e.value for e in tool_explicit.env_vars if e.value is not None}
+    assert env_explicit["EXGENTIC_SET_BENCHMARK_USER_SIMULATOR_MODEL"] == "openai/Azure/gpt-4.1"
 
 
 @respx.mock
