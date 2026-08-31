@@ -1,0 +1,231 @@
+[
+  {
+    "n": 1,
+    "bench": "gsm8k",
+    "title": "1 \u2014 gsm8k \u2014 baseline (default model, 1 task, no gateway, no plugins)",
+    "deploy": "(use standing default gsm8k deploy)",
+    "deploy_body": {
+      "agent": "tool_calling",
+      "namespace": "team1"
+    },
+    "teardown": true,
+    "run": {
+      "agent": "tool_calling",
+      "namespace": "team1",
+      "max_tasks": 1,
+      "max_parallel_sessions": 1,
+      "timeout_seconds": 120
+    }
+  },
+  {
+    "n": 2,
+    "bench": "gsm8k",
+    "title": "2 \u2014 gsm8k --max-tasks 10 \u2014 scale volume",
+    "deploy": "(default gsm8k deploy)",
+    "deploy_body": null,
+    "teardown": false,
+    "run": {
+      "agent": "tool_calling",
+      "namespace": "team1",
+      "max_tasks": 10,
+      "max_parallel_sessions": 1,
+      "timeout_seconds": 300
+    }
+  },
+  {
+    "n": 3,
+    "bench": "gsm8k",
+    "title": "3 \u2014 gsm8k --max-tasks 50 --max-parallel-sessions 4 \u2014 add concurrency",
+    "deploy": "(default gsm8k deploy)",
+    "deploy_body": null,
+    "teardown": false,
+    "run": {
+      "agent": "tool_calling",
+      "namespace": "team1",
+      "max_tasks": 50,
+      "max_parallel_sessions": 4,
+      "timeout_seconds": 400
+    }
+  },
+  {
+    "n": 4,
+    "bench": "gsm8k",
+    "title": "4 \u2014 gsm8k --model <alt> --max-tasks 5 --max-parallel-sessions 4 \u2014 swap model",
+    "deploy": "DELETE gsm8k; POST deploy {\"agent\":\"tool_calling\",\"namespace\":\"team1\",\"model\":\"openai/Azure/gpt-4.1\"}",
+    "deploy_body": {
+      "agent": "tool_calling",
+      "namespace": "team1",
+      "model": "openai/Azure/gpt-4.1"
+    },
+    "teardown": true,
+    "run": {
+      "agent": "tool_calling",
+      "namespace": "team1",
+      "max_tasks": 5,
+      "max_parallel_sessions": 4,
+      "timeout_seconds": 300,
+      "model": "openai/Azure/gpt-4.1",
+      "task_timeout_seconds": 120
+    }
+  },
+  {
+    "n": 5,
+    "bench": "gsm8k",
+    "title": "5 \u2014 gsm8k --plugin-preset auth-only \u2014 JWT + token exchange only",
+    "deploy": "DELETE gsm8k; POST deploy {\"authbridge_enabled\":true,\"plugin_preset\":\"auth-only\"}",
+    "deploy_body": {
+      "agent": "tool_calling",
+      "namespace": "team1",
+      "authbridge_enabled": true,
+      "plugin_preset": "auth-only"
+    },
+    "teardown": true,
+    "run": {
+      "agent": "tool_calling",
+      "namespace": "team1",
+      "max_tasks": 5,
+      "max_parallel_sessions": 4,
+      "timeout_seconds": 300,
+      "task_timeout_seconds": 120
+    }
+  },
+  {
+    "n": 6,
+    "bench": "gsm8k",
+    "title": "6 \u2014 gsm8k --plugin-preset ibac-only \u2014 IBAC guardrails only",
+    "deploy": "DELETE gsm8k; POST deploy {\"authbridge_enabled\":true,\"plugin_preset\":\"ibac-only\"}",
+    "deploy_body": {
+      "agent": "tool_calling",
+      "namespace": "team1",
+      "authbridge_enabled": true,
+      "plugin_preset": "ibac-only"
+    },
+    "teardown": true,
+    "run": {
+      "agent": "tool_calling",
+      "namespace": "team1",
+      "max_tasks": 5,
+      "max_parallel_sessions": 4,
+      "timeout_seconds": 300,
+      "task_timeout_seconds": 120
+    }
+  },
+  {
+    "n": 7,
+    "bench": "gsm8k",
+    "title": "7 \u2014 gsm8k --plugin-preset full \u2014 auth + parsers + IBAC (enforce)",
+    "deploy": "DELETE gsm8k; POST deploy {\"authbridge_enabled\":true,\"plugin_preset\":\"full\"}",
+    "deploy_body": {
+      "agent": "tool_calling",
+      "namespace": "team1",
+      "authbridge_enabled": true,
+      "plugin_preset": "full"
+    },
+    "teardown": true,
+    "run": {
+      "agent": "tool_calling",
+      "namespace": "team1",
+      "max_tasks": 5,
+      "max_parallel_sessions": 4,
+      "timeout_seconds": 300,
+      "task_timeout_seconds": 120
+    }
+  },
+  {
+    "n": 8,
+    "bench": "gsm8k",
+    "title": "8 \u2014 gsm8k --plugin-preset full --plugin ibac:observe \u2014 full pipeline, IBAC observe",
+    "deploy": "DELETE gsm8k; POST deploy {\"authbridge_enabled\":true,\"plugin_preset\":\"full\",\"plugins\":[\"ibac:observe\"]}",
+    "deploy_body": {
+      "agent": "tool_calling",
+      "namespace": "team1",
+      "authbridge_enabled": true,
+      "plugin_preset": "full",
+      "plugins": [
+        "ibac:observe"
+      ]
+    },
+    "teardown": true,
+    "run": {
+      "agent": "tool_calling",
+      "namespace": "team1",
+      "max_tasks": 5,
+      "max_parallel_sessions": 4,
+      "timeout_seconds": 300,
+      "task_timeout_seconds": 120
+    }
+  },
+  {
+    "n": 9,
+    "bench": "tau2",
+    "title": "9 \u2014 tau2 --max-tasks 10 \u2014 multi-turn (adds user-simulator LLM)",
+    "deploy": "(force teardown \u2192 fresh tau2 deploy, so agent re-renders with `EXGENTIC_DEFAULT_RUNNER=service`)",
+    "deploy_body": {
+      "agent": "tool_calling",
+      "namespace": "team1"
+    },
+    "teardown": true,
+    "run": {
+      "agent": "tool_calling",
+      "namespace": "team1",
+      "max_tasks": 10,
+      "max_parallel_sessions": 1,
+      "timeout_seconds": 2100,
+      "task_timeout_seconds": 600
+    }
+  },
+  {
+    "n": 10,
+    "bench": "tau2",
+    "title": "10 \u2014 tau2 --max-tasks 20 --max-parallel-sessions 4 \u2014 tau2 + concurrency",
+    "deploy": "(fresh tau2 deploy, same as #9)",
+    "deploy_body": null,
+    "teardown": false,
+    "run": {
+      "agent": "tool_calling",
+      "namespace": "team1",
+      "max_tasks": 20,
+      "max_parallel_sessions": 4,
+      "timeout_seconds": 2400,
+      "task_timeout_seconds": 600
+    }
+  },
+  {
+    "n": 11,
+    "bench": "appworld",
+    "title": "11 \u2014 appworld --model gemini-2.5-pro --max-tasks 5 \u2014 hardest benchmark",
+    "deploy": "POST deploy appworld {\"agent\":\"tool_calling\",\"namespace\":\"team1\",\"model\":\"openai/gemini-2.5-pro\"}",
+    "deploy_body": {
+      "agent": "tool_calling",
+      "namespace": "team1",
+      "model": "openai/gemini-2.5-pro"
+    },
+    "teardown": true,
+    "run": {
+      "agent": "tool_calling",
+      "namespace": "team1",
+      "max_tasks": 5,
+      "max_parallel_sessions": 1,
+      "timeout_seconds": 3300,
+      "model": "openai/gemini-2.5-pro",
+      "task_timeout_seconds": 600
+    }
+  },
+  {
+    "n": 12,
+    "bench": "appworld",
+    "title": "12 \u2014 appworld --model gemini-2.5-pro --max-tasks 20 --max-parallel-sessions 4 \u2014 appworld + concurrency",
+    "deploy": "(appworld deploy from #11)",
+    "deploy_body": null,
+    "teardown": false,
+    "run": {
+      "agent": "tool_calling",
+      "namespace": "team1",
+      "max_tasks": 20,
+      "max_parallel_sessions": 4,
+      "timeout_seconds": 3600,
+      "model": "openai/gemini-2.5-pro",
+      "task_timeout_seconds": 600
+    }
+  }
+]
