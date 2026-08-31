@@ -468,3 +468,65 @@ def test_run_times_out_when_inner_swallows_cancellation(client, make_token, jwks
     data = _poll(client, _auth(make_token), r.json()["run_id"], timeout=8.0)
     assert data["status"] == "failed"
     assert "timeout" in data["error"].lower()
+
+
+class _FakeRecord:
+    """Minimal stand-in for MLflowTraceRecord for the export-settle fingerprint."""
+
+    def __init__(self, llm_count=0, tool_count=0, input_tokens=0, output_tokens=0):
+        self.llm_count = llm_count
+        self.tool_count = tool_count
+        self.llm_input_tokens = input_tokens
+        self.llm_output_tokens = output_tokens
+
+
+def test_export_waits_for_late_arriving_llm_spans(monkeypatch):
+    """The agent's LLM/tool spans reach MLflow after the run ends, so the first read can show
+    llm_count=0. The export must re-read until the record set stops growing."""
+    monkeypatch.setattr(settings, "export_settle_interval_seconds", 0.0)
+    monkeypatch.setattr(settings, "export_settle_max_seconds", 5.0)
+
+    reads = [
+        [_FakeRecord()],  # Agent.Session only — children not queryable yet
+        [_FakeRecord(llm_count=1, tool_count=1, input_tokens=120, output_tokens=30)],
+        [_FakeRecord(llm_count=2, tool_count=1, input_tokens=320, output_tokens=87)],
+        [_FakeRecord(llm_count=2, tool_count=1, input_tokens=320, output_tokens=87)],
+    ]
+    calls = {"n": 0}
+
+    async def fake_fetch(request, ctx, run):
+        i = calls["n"]
+        calls["n"] += 1
+        return reads[min(i, len(reads) - 1)]
+
+    monkeypatch.setattr(runs_module, "_fetch_records_once", fake_fetch)
+    run = type("R", (), {"run_id": "r1"})()
+    records = asyncio.run(runs_module._collect_records_soft(None, None, run))
+
+    assert len(records) == 1
+    assert records[0].llm_count == 2
+    assert records[0].llm_input_tokens == 320
+    assert records[0].llm_output_tokens == 87
+    # Needed two identical reads to declare settled, so it cannot have stopped at the first.
+    assert calls["n"] == 4
+
+
+def test_export_does_not_retry_when_mlflow_unavailable(monkeypatch):
+    """No MLflow config / auth failure means there is nothing to wait for — return at once
+    rather than burning the settle budget and delaying the S3 export."""
+    monkeypatch.setattr(settings, "export_settle_interval_seconds", 0.0)
+    monkeypatch.setattr(settings, "export_settle_max_seconds", 30.0)
+    calls = {"n": 0}
+
+    async def fake_fetch(request, ctx, run):
+        calls["n"] += 1
+        return None
+
+    monkeypatch.setattr(runs_module, "_fetch_records_once", fake_fetch)
+    run = type("R", (), {"run_id": "r1"})()
+    started = time.monotonic()
+    records = asyncio.run(runs_module._collect_records_soft(None, None, run))
+
+    assert records == []
+    assert calls["n"] == 1
+    assert time.monotonic() - started < 5.0

@@ -275,15 +275,65 @@ async def _maybe_export_run(request: Request, ctx: RequestContext, run: RunState
     )
 
 
+def _records_fingerprint(records: list) -> tuple:
+    """Cheap "has anything more arrived?" signature over a record set."""
+    return (
+        len(records),
+        sum(r.llm_count for r in records),
+        sum(r.tool_count for r in records),
+        sum(r.llm_input_tokens for r in records),
+        sum(r.llm_output_tokens for r in records),
+    )
+
+
 async def _collect_records_soft(request: Request, ctx: RequestContext, run: RunState) -> list:
     """Fetch this run's MLflow records for export, returning [] on any issue (never raises).
 
     Mirrors the report path but tolerant: no MLflow config, auth/transport failure, or empty
     traces all yield [] so the run summary + (empty) NDJSON still export.
+
+    The workload's LLM/tool spans arrive asynchronously (agent -> otel-collector batch +
+    sending_queue -> MLflow -> postgres), so a fast run can reach this point before its child
+    spans are queryable — exporting model="unknown" and llm_count/tokens=0 even though the
+    data lands moments later. Re-read until the record set stops growing, bounded by
+    `export_settle_max_seconds`.
+    """
+    deadline = time.monotonic() + settings.export_settle_max_seconds
+    previous: tuple | None = None
+    records: list = []
+    while True:
+        fetched = await _fetch_records_once(request, ctx, run)
+        if fetched is None:
+            # No MLflow configured, or auth/transport is failing — there is nothing to wait
+            # for, so don't burn the settle budget (and don't delay the export).
+            return records
+        records = fetched
+        current = _records_fingerprint(records)
+        if records and current == previous:
+            return records  # two identical reads in a row -> spans have settled
+        previous = current
+        if time.monotonic() >= deadline:
+            if records and any(r.llm_count == 0 for r in records):
+                logger.warning(
+                    "run %s: exporting with %d record(s) still showing llm_count=0 after %.0fs "
+                    "settle budget — token attribution may be incomplete",
+                    run.run_id,
+                    sum(1 for r in records if r.llm_count == 0),
+                    settings.export_settle_max_seconds,
+                )
+            return records
+        await asyncio.sleep(settings.export_settle_interval_seconds)
+
+
+async def _fetch_records_once(request: Request, ctx: RequestContext, run: RunState) -> list | None:
+    """One MLflow read + parse for this run's sessions.
+
+    Returns the (possibly empty) record list, or `None` when there is nothing to wait for —
+    MLflow isn't configured, or auth/transport failed — so the caller can stop retrying.
     """
     cfg = request.app.state.config_overrides.effective(ctx.instance.iss, ctx.instance).mlflow
     if not cfg.tracking_url:
-        return []
+        return None
     since_ms = int(run.started_at * 1000) - 60_000 if run.started_at else None
     try:
         if cfg.insecure_tls:
@@ -298,7 +348,7 @@ async def _collect_records_soft(request: Request, ctx: RequestContext, run: RunS
             traces = await mlflow_report.download_traces(client, cfg, token, since_ms=since_ms)
     except (MLflowAuthError, httpx.HTTPError) as exc:
         logger.warning("run %s: MLflow read for export failed (%s)", run.run_id, exc)
-        return []
+        return None
     records = mlflow_report.parse_traces(traces)
     return mlflow_report.filter_by_sessions(records, [r.session_id for r in run.results])
 
