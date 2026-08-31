@@ -95,6 +95,7 @@ async def deploy_benchmark(
         req.plugin_preset,
         req.plugins,
         req.on_error,
+        ctx.instance.workload_agent_runner,
     )
     try:
         tool_resp = await client.create_tool(tool_req.to_rossoctl_body())

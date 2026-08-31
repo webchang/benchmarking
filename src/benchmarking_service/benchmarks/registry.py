@@ -222,6 +222,7 @@ def build_agent_request(
     plugin_preset: str | None = None,
     plugins: list[str] | None = None,
     on_error: str | None = None,
+    agent_runner: str | None = None,
 ) -> AgentCreateRequest:
     spec = defn.agents[agent]
     resolved_model = _resolve_model(defn, model, llm)
@@ -235,6 +236,11 @@ def build_agent_request(
     if otel is not None and otel.enabled:
         injected += _otel_env(otel)
     env_vars = _apply_llm(list(spec.extra_env) + injected, llm, agent=True)
+    if agent_runner:
+        # Drop then re-inject so the instance override wins cleanly instead of duplicating a
+        # name k8s would warn/drop on (same approach as the LLM-base override).
+        env_vars = [e for e in env_vars if e.name != "EXGENTIC_DEFAULT_RUNNER"]
+        env_vars.append(EnvVar(name="EXGENTIC_DEFAULT_RUNNER", value=agent_runner))
     return AgentCreateRequest(
         name=agent_name(defn.name, agent, experiment),
         namespace=namespace,

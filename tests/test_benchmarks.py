@@ -645,3 +645,20 @@ def test_teardown_benchmark(client, make_token, jwks_doc):
     )
     r = client.delete("/benchmarks/gsm8k/deploy", headers=_auth(make_token))
     assert r.status_code == 204
+
+
+def test_instance_agent_runner_overrides_registry_default():
+    """`workload_agent_runner` replaces the pinned EXGENTIC_DEFAULT_RUNNER exactly once, so the
+    wrong runner can be corrected per instance without touching the shared default."""
+    from benchmarking_service.benchmarks.registry import BENCHMARKS, build_agent_request
+
+    defn = BENCHMARKS["gsm8k"]
+    default_req = build_agent_request(defn, "tool_calling", "team1", None)
+    default_runner = [e for e in default_req.env_vars if e.name == "EXGENTIC_DEFAULT_RUNNER"]
+    assert [e.value for e in default_runner] == ["service"]
+
+    overridden = build_agent_request(
+        defn, "tool_calling", "team1", None, agent_runner="direct"
+    )
+    runners = [e for e in overridden.env_vars if e.name == "EXGENTIC_DEFAULT_RUNNER"]
+    assert [e.value for e in runners] == ["direct"], "must replace, not duplicate"
