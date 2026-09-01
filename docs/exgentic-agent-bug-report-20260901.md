@@ -117,51 +117,66 @@ went from 1 affected task to 0/10, and across two full 12-run matrices from 47 a
 
 ---
 
-## Bug 2 — every task issues a `max_tokens=1` probe that always fails, costing a round-trip
+## Bug 2 — the per-task `max_tokens=1` probe is rejected by reasoning models
 
 ### Symptom
 
-Each task performs an extra LLM call with `gen_ai.request.max_tokens=1` which fails with
-`BadRequestError` and produces no output. It then proceeds with the real call.
+Each task issues an extra LLM call with `gen_ai.request.max_tokens=1` before the real work. With a
+**reasoning** model that call fails with `BadRequestError` and yields nothing; with a non-reasoning
+model it succeeds. Either way it is counted as an LLM call.
 
-### Evidence
+### Evidence — same benchmark task, two models
 
-From the healthy trace above, the two spans for one task:
+`gpt-5-mini` (reasoning) — the probe **fails**:
 
-| span | `max_tokens` | outcome | duration |
-|---|---|---|---|
-| probe | **1** | `error.type=BadRequestError`, no usage, no output messages | **9.58s** |
-| real call | — | success, usage 320/87, `finish_reasons=[tool_calls]` | 4.77s |
+| span | `max_tokens` | error | usage | dur |
+|---|---|---|---|---|
+| probe | **1** | **`BadRequestError`** | none | 9.58s |
+| real call | — | none | 320 in / 87 out | 4.77s |
 
-The probe span starts first and the real call starts only after it ends, so the cost is serial.
+`Azure/gpt-4.1` (non-reasoning), same task — the probe **succeeds**:
+
+| span | `max_tokens` | error | usage_in | dur |
+|---|---|---|---|---|
+| probe | **1** | none | **8** | 13.49s |
+| real call | — | none | 239 | 1.62s |
+| real call | — | none | 270 | 5.82s |
+| real call | — | none | 298 | 1.52s |
+
+The gpt-4.1 totals reconcile exactly: 8 + 239 + 270 + 298 = 815, the value our report shows for that
+task. So the probe is a real call that normally returns usage, and the failure is specific to the
+reasoning model rejecting `max_tokens`.
 
 ### Impact
 
-- **Wasted latency on every task** — in the measured trace the failed probe took *longer than the
-  real call* (9.58s vs 4.77s). If that ratio is at all typical, a large fraction of per-task wall
-  time is spent on a call that cannot succeed.
-- **Inflates call counts.** Anything counting `chat` spans as "LLM calls" overcounts by one per
-  task. In our reports a task with a single real call shows `llm=2`.
+- **A guaranteed failed round-trip per task on reasoning models.** Every task issues a call that
+  cannot succeed. Whether the `BadRequestError` is handled or merely swallowed is worth checking.
+- **Call counts are inflated by one.** Anything counting `chat` spans as "LLM calls" overcounts: the
+  gpt-4.1 task above made **three** real calls but reports `llm=4`.
+- **Latency cost is real but smaller than the span duration suggests.** The probe is always the first
+  call in a task and always the slowest (9.58s / 13.49s vs 1.5–5.8s for subsequent calls), which
+  points to connection/TLS/gateway warm-up being charged to whichever call goes first. Removing the
+  probe would therefore shift most of that cost onto the first real call rather than eliminate it.
+  We have not isolated the two, so we are deliberately not claiming a specific saving.
 
-### Likely cause
+### Likely cause and suggested fix
 
-`gpt-5-mini` is a reasoning model; the OpenAI-compatible surface rejects `max_tokens` in favour of
-`max_completion_tokens`, and/or rejects `max_tokens=1`. We hit exactly this constraint elsewhere:
-an independent probe of ours against the same gateway had to use `max_completion_tokens`, and with a
-16-token budget the model returned `finish_reason=length` with empty content because the budget was
-consumed by reasoning tokens.
+Reasoning models on the OpenAI-compatible surface reject `max_tokens` in favour of
+`max_completion_tokens`. We hit the same constraint independently: a probe of ours against the same
+gateway had to use `max_completion_tokens`, and with a 16-token budget `gpt-5-mini` returned
+`finish_reason=length` with empty content because reasoning tokens consumed the budget.
 
-### Suggested fix
-
-If the probe is a capability/liveness check, either send `max_completion_tokens` for reasoning
-models, skip the probe when the provider/model is known, cache the result per process instead of
-per task, or drop it if the information is not used. Worth also confirming the `BadRequestError` is
-being handled rather than merely swallowed.
-
----
+Suggested: send `max_completion_tokens` when the model is a reasoning model (or unconditionally, if
+the gateway accepts it), and consider caching the probe result per process rather than repeating it
+per task.
 
 ## Contact / more data available
 
 We have the full trace JSON for both the healthy and affected tasks (all span names, attributes and
 timings), agent logs, and the exact request bodies, and can re-run any variant on demand — including
-with a different model if you want to isolate Bug 2 from the reasoning-model behaviour.
+with a different model.
+
+Bug 2's model-dependence is already confirmed here (gpt-5-mini fails, gpt-4.1 succeeds on the same
+task). What we have NOT isolated is how much of the probe's wall time is intrinsic versus first-call
+connection overhead — that would need a run with the probe disabled, which we cannot do from outside
+the agent.
