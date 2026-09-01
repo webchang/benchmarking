@@ -21,9 +21,12 @@
     "n": 2,
     "bench": "gsm8k",
     "title": "2 \u2014 gsm8k --max-tasks 10 \u2014 scale volume",
-    "deploy": "(default gsm8k deploy)",
-    "deploy_body": null,
-    "teardown": false,
+    "deploy": "fresh deploy (was: reuse) \u2014 avoids the warm-agent token-attribution loss",
+    "deploy_body": {
+      "agent": "tool_calling",
+      "namespace": "team1"
+    },
+    "teardown": true,
     "run": {
       "agent": "tool_calling",
       "namespace": "team1",
@@ -36,9 +39,12 @@
     "n": 3,
     "bench": "gsm8k",
     "title": "3 \u2014 gsm8k --max-tasks 50 --max-parallel-sessions 4 \u2014 add concurrency",
-    "deploy": "(default gsm8k deploy)",
-    "deploy_body": null,
-    "teardown": false,
+    "deploy": "fresh deploy (was: reuse) \u2014 avoids the warm-agent token-attribution loss",
+    "deploy_body": {
+      "agent": "tool_calling",
+      "namespace": "team1"
+    },
+    "teardown": true,
     "run": {
       "agent": "tool_calling",
       "namespace": "team1",
@@ -178,9 +184,12 @@
     "n": 10,
     "bench": "tau2",
     "title": "10 \u2014 tau2 --max-tasks 20 --max-parallel-sessions 4 \u2014 tau2 + concurrency",
-    "deploy": "(fresh tau2 deploy, same as #9)",
-    "deploy_body": null,
-    "teardown": false,
+    "deploy": "fresh deploy (was: reuse) \u2014 avoids the warm-agent token-attribution loss",
+    "deploy_body": {
+      "agent": "tool_calling",
+      "namespace": "team1"
+    },
+    "teardown": true,
     "run": {
       "agent": "tool_calling",
       "namespace": "team1",
@@ -215,9 +224,13 @@
     "n": 12,
     "bench": "appworld",
     "title": "12 \u2014 appworld --model gemini-2.5-pro --max-tasks 20 --max-parallel-sessions 4 \u2014 appworld + concurrency",
-    "deploy": "(appworld deploy from #11)",
-    "deploy_body": null,
-    "teardown": false,
+    "deploy": "fresh deploy (was: reuse) \u2014 avoids the warm-agent token-attribution loss",
+    "deploy_body": {
+      "agent": "tool_calling",
+      "namespace": "team1",
+      "model": "openai/gemini-2.5-pro"
+    },
+    "teardown": true,
     "run": {
       "agent": "tool_calling",
       "namespace": "team1",
