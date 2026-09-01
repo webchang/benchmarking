@@ -10,6 +10,7 @@ derived from the artifacts — nothing is transcribed by hand.
 import json
 import pathlib
 import sys
+from datetime import datetime, timezone
 
 SRC = pathlib.Path(sys.argv[1])
 VERSION = sys.argv[2]
@@ -217,7 +218,10 @@ def sec7():
     return "\n".join(o)
 
 
+GENERATED = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 head = [f"# Benchmarking Service — 12 Parameterized Runs ({PLATFORM})", "",
+        f"**Report generated:** {GENERATED}  ",
         f"**Service version:** `{VERSION}`  ", f"**Target:** {data.get('base')}  ",
         f"**Runs executed:** {len(runs)}", "",
         "All numbers below are derived programmatically from the mirrored S3 artifacts "

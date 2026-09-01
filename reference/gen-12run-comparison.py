@@ -8,6 +8,7 @@ Every number is derived from the mirrored report.ndjson files, nothing transcrib
 import json
 import pathlib
 import sys
+from datetime import datetime, timezone
 
 A, ALAB, B, BLAB, VERSION = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 OUT = pathlib.Path(sys.argv[6]) if len(sys.argv) > 6 else None
@@ -63,7 +64,10 @@ def load(path):
 
 X, xbase = load(A)
 Y, ybase = load(B)
+GENERATED = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 L = [f"# 12-Run Comparison — {ALAB} vs {BLAB}, both Service {VERSION}", "",
+     f"**Report generated:** {GENERATED}", "",
      f"- **{ALAB}**: `{xbase}`", f"- **{BLAB}**: `{ybase}`", "",
      "Both sides ran the same 12 request bodies, the same Service version, and verified-identical",
      "instance config. Every leg deploys fresh. Task selection is deterministic, so the same",
