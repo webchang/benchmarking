@@ -248,8 +248,8 @@ larger value for tau2 runs.
 #### Comparing runs across clusters (e.g. kind vs a remote workload cluster)
 
 When the same benchmark is run on two matrices, the artifact *set and schema are identical*
-(`run.json` + `report.ndjson` + `report.parquet`), because S3 export lives in the Service and is
-cluster-agnostic. Per-run **content** still differs run-to-run, and a per-task pass/fail can flip
+(`run.json` + `report.*` + `token_report.*` + `span_report.*` + `manifest.json`), because S3 export
+lives in the Service and is cluster-agnostic. Per-run **content** still differs run-to-run, and a per-task pass/fail can flip
 between clusters — but that is usually **not** a cluster/wiring/model difference. Both the agent
 model and the tau2 user-simulator resolve to the *same* `default_model` (`openai/Qwen3.6-35B-A3B`)
 against the *same shared external LiteLLM base* (`_LITELLM_BASE_URL` in `registry.py`, not a
@@ -462,14 +462,24 @@ per-Service (each Service reads/writes only its own co-located MLflow), so it ca
 *across* Services. S3 is the shared aggregation layer: on run completion the Service uploads the same
 `MLflowTraceRecord`s the report API returns, so cross-service data lands in one bucket under a
 hierarchical key that groups naturally —
-`<prefix>/<preferred_username>/<source_iss>/<benchmark>/<run_id>/{run.json,report.ndjson,report.parquet}`.
+`<prefix>/<preferred_username>/<source_iss>/<benchmark>/<run_id>/{run.json,report.*,token_report.*,span_report.*,manifest.json}`.
 The requester's `preferred_username` is the top level (a person's runs group across every Service
 they use); `<source_iss>` (the Service benchmarker's `iss`, scheme-stripped and sanitized)
 distinguishes each Service; then benchmark name and the Service-generated `run_id`. Each run writes
-`run.json` (the run summary), `report.ndjson` (one record per line, streaming-friendly), and — only
-when there are records, since Parquet needs a schema inferred from the rows — `report.parquet`
-(analytics-friendly). Objects go up **public-read by default** (`S3Config.public_read`, read-only to
-everyone else, owner-only writes); if the bucket has ACLs disabled the put is retried without one.
+`run.json` (the run summary), `report.ndjson` (one record per line, streaming-friendly), the lean
+`token_report.*` projection, the per-span `span_report.*` inventory, `manifest.json` (a
+self-describing index that omits only itself), and — only where there are rows, since Parquet needs a
+schema inferred from them — the matching `.parquet` files. Objects go up **public-read by default**
+(`S3Config.public_read`, read-only to everyone else, owner-only writes); if the bucket has ACLs
+disabled the put is retried without one.
+
+Because the ACL is applied per object with no per-artifact granularity, *anything* exported is
+public. That is why `span_report` projects an explicit whitelist (`mlflow_report.SPAN_ROW_KEYS`)
+rather than dumping span attributes: `transform_spans` strips only `mlflow.*`, so attributes such as
+`gen_ai.prompt.*` would otherwise survive into a world-readable object. The span parquet is also
+built inside a `try`, because every artifact body is serialized before the first upload — letting
+pyarrow raise on an unexpected third-party span value would forfeit the whole export for the sake of
+a secondary artifact.
 
 This is **opt-in** (a no-op unless the instance's `S3Config.bucket` is set) and **fail-soft**: the
 export runs in `_execute`'s `finally` after the run reaches a terminal status, and any failure

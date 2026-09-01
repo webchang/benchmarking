@@ -236,3 +236,111 @@ async def test_export_run_private_when_public_read_false(monkeypatch):
         run_summary={"run_id": "run-4"},
     )
     assert all("ACL" not in p for p in fake.puts)
+
+
+def _span_rows(n=2):
+    """Rows shaped like mlflow_report.span_rows output: one fixed key set, all scalars."""
+    return [
+        {
+            "task_id": f"t{i}",
+            "session_id": f"sess-{i}",
+            "trace_id": "tr1",
+            "span_id": f"s{i}",
+            "parent_span_id": "root",
+            "name": "chat gpt",
+            "kind": "chat",
+            "parent_name": "invoke_agent",
+            "depth": 3,
+            "start_time": "2026-09-01T00:00:00+00:00",
+            "latency_ms": 900.0,
+            "status_code": "OK",
+            "error_type": None,
+            "counted": True,
+            "input_tokens": 120,
+            "output_tokens": 45,
+            "request_model": "gpt-5-mini",
+            "request_max_tokens": None,
+            "finish_reasons": "tool_calls",
+        }
+        for i in range(n)
+    ]
+
+
+async def test_export_run_adds_span_report_when_spans_present(monkeypatch):
+    fake = _FakeS3Client()
+    _install_client(monkeypatch, fake)
+    artifacts = await s3_export.export_run(
+        S3Config(bucket="b"),
+        preferred_username="alice",
+        source_iss=ISS,
+        benchmark="gsm8k",
+        run_id="run-sp",
+        records=_records(2),
+        run_summary={"run_id": "run-sp"},
+        span_dicts=_span_rows(2),
+    )
+    names = {a.name for a in artifacts}
+    assert names == {
+        "run.json",
+        "report.ndjson",
+        "report.parquet",
+        "token_report.ndjson",
+        "token_report.parquet",
+        "span_report.ndjson",
+        "span_report.parquet",
+        "manifest.json",
+    }
+    # The manifest indexes the span artifacts too (it still omits only itself).
+    body = next(p["Body"] for p in fake.puts if p["Key"].endswith("manifest.json"))
+    listed = {a["name"] for a in json.loads(body)["artifacts"]}
+    assert "span_report.ndjson" in listed and "span_report.parquet" in listed
+    assert "manifest.json" not in listed
+    # NDJSON round-trips one line per span.
+    ndjson = next(p["Body"] for p in fake.puts if p["Key"].endswith("span_report.ndjson"))
+    rows = [json.loads(line) for line in ndjson.decode().splitlines()]
+    assert [r["span_id"] for r in rows] == ["s0", "s1"]
+
+
+async def test_export_run_omits_span_artifacts_when_no_spans(monkeypatch):
+    """Backwards compatible: a run with no span inventory exports exactly the previous 6 objects."""
+    fake = _FakeS3Client()
+    _install_client(monkeypatch, fake)
+    artifacts = await s3_export.export_run(
+        S3Config(bucket="b"),
+        preferred_username="alice",
+        source_iss=ISS,
+        benchmark="gsm8k",
+        run_id="run-nosp",
+        records=_records(1),
+        run_summary={"run_id": "run-nosp"},
+    )
+    assert len(artifacts) == 6
+    assert not any(a.name.startswith("span_report") for a in artifacts)
+
+
+async def test_export_run_survives_unparquetable_span_rows(monkeypatch):
+    """A bad span value must cost us only span_report.parquet — never the whole export.
+
+    Everything is serialized before any upload, so an unhandled pyarrow error here would take
+    report/token/summary down with it over a secondary artifact.
+    """
+    fake = _FakeS3Client()
+    _install_client(monkeypatch, fake)
+    rows = _span_rows(2)
+    rows[1]["latency_ms"] = {"not": "a scalar"}  # mixed type -> pyarrow raises
+
+    artifacts = await s3_export.export_run(
+        S3Config(bucket="b"),
+        preferred_username="alice",
+        source_iss=ISS,
+        benchmark="gsm8k",
+        run_id="run-bad",
+        records=_records(1),
+        run_summary={"run_id": "run-bad"},
+        span_dicts=rows,
+    )
+    names = {a.name for a in artifacts}
+    assert "span_report.parquet" not in names          # the only casualty
+    assert "span_report.ndjson" in names               # NDJSON still carries the evidence
+    assert {"run.json", "report.ndjson", "report.parquet", "token_report.ndjson",
+            "token_report.parquet", "manifest.json"} <= names

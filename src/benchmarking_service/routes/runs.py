@@ -259,7 +259,7 @@ async def _maybe_export_run(request: Request, ctx: RequestContext, run: RunState
     if not eff.s3.bucket:
         return
     username = ctx.preferred_username or "unknown"
-    records = await _collect_records_soft(request, ctx, run)
+    records, span_dicts = await _collect_records_soft(request, ctx, run)
     artifacts = await s3_export.export_run(
         eff.s3,
         preferred_username=username,
@@ -268,6 +268,7 @@ async def _maybe_export_run(request: Request, ctx: RequestContext, run: RunState
         run_id=run.run_id,
         records=records,
         run_summary=run.model_dump(mode="json", exclude={"artifacts", "artifacts_prefix"}),
+        span_dicts=span_dicts,
     )
     run.artifacts = artifacts
     run.artifacts_prefix = s3_export.run_prefix(
@@ -286,11 +287,16 @@ def _records_fingerprint(records: list) -> tuple:
     )
 
 
-async def _collect_records_soft(request: Request, ctx: RequestContext, run: RunState) -> list:
-    """Fetch this run's MLflow records for export, returning [] on any issue (never raises).
+async def _collect_records_soft(
+    request: Request, ctx: RequestContext, run: RunState
+) -> tuple[list, list[dict]]:
+    """Fetch this run's MLflow records + per-span rows for export; `([], [])` on any issue.
 
     Mirrors the report path but tolerant: no MLflow config, auth/transport failure, or empty
-    traces all yield [] so the run summary + (empty) NDJSON still export.
+    traces all yield empties so the run summary + (empty) NDJSON still export.
+
+    Both views come from the SAME MLflow read — the span inventory is a second projection of the
+    traces `parse_traces` already consumed, never an extra fetch.
 
     The workload's LLM/tool spans arrive asynchronously (agent -> otel-collector batch +
     sending_queue -> MLflow -> postgres), so a fast run can reach this point before its child
@@ -301,16 +307,17 @@ async def _collect_records_soft(request: Request, ctx: RequestContext, run: RunS
     deadline = time.monotonic() + settings.export_settle_max_seconds
     previous: tuple | None = None
     records: list = []
+    spans: list[dict] = []
     while True:
         fetched = await _fetch_records_once(request, ctx, run)
         if fetched is None:
             # No MLflow configured, or auth/transport is failing — there is nothing to wait
             # for, so don't burn the settle budget (and don't delay the export).
-            return records
-        records = fetched
+            return records, spans
+        records, spans = fetched
         current = _records_fingerprint(records)
         if records and current == previous:
-            return records  # two identical reads in a row -> spans have settled
+            return records, spans  # two identical reads in a row -> spans have settled
         previous = current
         if time.monotonic() >= deadline:
             if records and any(r.llm_count == 0 for r in records):
@@ -321,15 +328,18 @@ async def _collect_records_soft(request: Request, ctx: RequestContext, run: RunS
                     sum(1 for r in records if r.llm_count == 0),
                     settings.export_settle_max_seconds,
                 )
-            return records
+            return records, spans
         await asyncio.sleep(settings.export_settle_interval_seconds)
 
 
-async def _fetch_records_once(request: Request, ctx: RequestContext, run: RunState) -> list | None:
+async def _fetch_records_once(
+    request: Request, ctx: RequestContext, run: RunState
+) -> tuple[list, list[dict]] | None:
     """One MLflow read + parse for this run's sessions.
 
-    Returns the (possibly empty) record list, or `None` when there is nothing to wait for —
-    MLflow isn't configured, or auth/transport failed — so the caller can stop retrying.
+    Returns `(records, span_rows)` — both projections of the same trace read — or `None` when
+    there is nothing to wait for (MLflow isn't configured, or auth/transport failed) so the
+    caller can stop retrying.
     """
     cfg = request.app.state.config_overrides.effective(ctx.instance.iss, ctx.instance).mlflow
     if not cfg.tracking_url:
@@ -349,8 +359,18 @@ async def _fetch_records_once(request: Request, ctx: RequestContext, run: RunSta
     except (MLflowAuthError, httpx.HTTPError) as exc:
         logger.warning("run %s: MLflow read for export failed (%s)", run.run_id, exc)
         return None
+    session_ids = [r.session_id for r in run.results]
     records = mlflow_report.parse_traces(traces)
-    return mlflow_report.filter_by_sessions(records, [r.session_id for r in run.results])
+    spans: list[dict] = []
+    try:
+        spans = mlflow_report.filter_span_rows(mlflow_report.span_rows(traces), session_ids)[
+            : settings.span_report_max_rows
+        ]
+    except Exception:  # noqa: BLE001 - the span inventory must never cost us the records
+        logger.exception(
+            "run %s: building the span inventory failed; exporting without it", run.run_id
+        )
+    return mlflow_report.filter_by_sessions(records, session_ids), spans
 
 
 async def _build_run_tracer(request: Request, ctx: RequestContext, run_id: str):

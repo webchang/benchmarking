@@ -497,12 +497,14 @@ def test_export_waits_for_late_arriving_llm_spans(monkeypatch):
     async def fake_fetch(request, ctx, run):
         i = calls["n"]
         calls["n"] += 1
-        return reads[min(i, len(reads) - 1)]
+        # (records, span_rows) — the span inventory is a second projection of the same read.
+        return reads[min(i, len(reads) - 1)], [{"name": "chat gpt"}]
 
     monkeypatch.setattr(runs_module, "_fetch_records_once", fake_fetch)
     run = type("R", (), {"run_id": "r1"})()
-    records = asyncio.run(runs_module._collect_records_soft(None, None, run))
+    records, spans = asyncio.run(runs_module._collect_records_soft(None, None, run))
 
+    assert spans == [{"name": "chat gpt"}]  # spans ride along with the settled records
     assert len(records) == 1
     assert records[0].llm_count == 2
     assert records[0].llm_input_tokens == 320
@@ -525,8 +527,8 @@ def test_export_does_not_retry_when_mlflow_unavailable(monkeypatch):
     monkeypatch.setattr(runs_module, "_fetch_records_once", fake_fetch)
     run = type("R", (), {"run_id": "r1"})()
     started = time.monotonic()
-    records = asyncio.run(runs_module._collect_records_soft(None, None, run))
+    records, spans = asyncio.run(runs_module._collect_records_soft(None, None, run))
 
-    assert records == []
+    assert (records, spans) == ([], [])
     assert calls["n"] == 1
     assert time.monotonic() - started < 5.0

@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     # re-read until the record set stops growing (or the budget runs out).
     export_settle_max_seconds: float = 20.0
     export_settle_interval_seconds: float = 2.0
+    # Upper bound on rows in the per-span inventory artifact (`span_report.*`). A normal task emits
+    # ~10 (gsm8k) to ~100 (appworld) spans, so a 50-task run sits well under 10k; the cap only exists
+    # so a pathological trace cannot balloon the export, which is built entirely in memory.
+    span_report_max_rows: int = 200_000
 
 
 settings = Settings()

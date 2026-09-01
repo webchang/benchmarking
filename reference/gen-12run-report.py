@@ -143,6 +143,23 @@ per-process OTEL context at run end) — see `docs/exgentic-agent-bug-report-202
 is a fresh deploy per run. `llm=0` with `tool=0` is different and benign-ish: no chat span at all
 (session rejected before any model call).
 
+### `span_report.ndjson` (§8)
+
+One row per OTEL span per task — the evidence the counters above are derived from. Fields:
+`task_id`, `session_id`, `trace_id`, `span_id`, `parent_span_id`, `name`, `kind`, `parent_name`,
+`depth`, `start_time`, `latency_ms`, `status_code`, `error_type`, `counted`, `input_tokens`,
+`output_tokens`, `request_model`, `request_max_tokens`, `finish_reasons`.
+
+| Column | Meaning |
+|---|---|
+| `name` | The span title, e.g. `Agent.Session`, `chat gpt-5-mini`, `execute_tool submit`. |
+| `kind` | `root` / `phase` / `agent` / `chat` / `tool` / `other` (`other` = nested HTTP/framework children the harness does not name). |
+| `counted` | Whether this span fed `llm_count`/`tool_count`. `false` marks real work the aggregate cannot see, because only spans parented by `invoke_agent` are counted (and `execute_tool initial_observation` never is). `null` for non-chat/tool spans. |
+| `request_max_tokens` | `1` identifies the capability probe unambiguously. |
+
+That set is a deliberate whitelist: span attributes can carry prompts and completions, and these
+objects are public, so nothing outside this list is published (see the S3 section).
+
 ### Run-summary fields (`RunSummary`, shown in §4)
 
 | Field | Meaning |
@@ -189,8 +206,8 @@ def sec_s3():
          f"| **URL root** | `{url_root}` |",
          f"| **Key prefix (all {len(all_keys)} objects)** | `{root}` |", "",
          "The key layout is `<s3.prefix>/<caller>/<iss-host-encoded>/<benchmark>/<run_id>/<artifact>`, "
-         f"so **benchmark is a path segment** and selects cleanly ({len(all_keys)} objects = "
-         f"{len(runs)} runs x 6 artifacts):", "",
+         f"so **benchmark is a path segment** and selects cleanly ({len(all_keys)} objects across "
+         f"{len(runs)} runs):", "",
          "| benchmark | runs | objects | prefix (append to the key prefix above) |",
          "|---|---:|---:|---|"]
     for b in sorted(per_bench):
@@ -208,8 +225,12 @@ def sec_s3():
           "model, resolve model -> `run_id` from the summary in section 4 and use the per-run prefixes.",
           "",
           "Objects are readable **and listable anonymously** (no credentials needed), so treat "
-          "anything written here as public: the keys expose the caller and the Keycloak issuer host, "
-          "and `report.ndjson` contains task prompts and model outputs."]
+          "anything written here as public. What is actually exposed: the **keys** carry the caller's "
+          "username and the Keycloak issuer host, and `run.json` / `report.ndjson` can carry "
+          "**exception strings** from failed tasks (`status_message`, `TaskResult.error`), which may "
+          "quote a server error body. No artifact contains task prompts or model outputs — the "
+          "record schema is entirely ids, counts and durations, and `span_report.*` is restricted to "
+          "a fixed whitelist of structural and numeric span fields for exactly this reason."]
     return "\n".join(o)
 
 
@@ -271,13 +292,15 @@ def sec4():
 
 
 def sec5():
+    ex = next((manifest(r) for r in runs if manifest(r)), None)
+    listed = [a["name"] for a in (ex or {}).get("artifacts", [])]
     o = ["## 5. Contents of the manifest file", "",
          "Every run writes a `manifest.json` at its S3 prefix — a self-describing index of the "
          "run's data objects, so a client discovers the whole run in one fetch with no S3 listing. "
-         "It lists the 5 data artifacts (`run.json`, `report.ndjson/parquet`, "
-         "`token_report.ndjson/parquet`); the manifest does **not** list itself. Each entry carries "
-         "`name`, `format`, `key`, public `url`, and `size_bytes`.", ""]
-    ex = next((manifest(r) for r in runs if manifest(r)), None)
+         f"It lists the {len(listed)} data artifacts ("
+         + ", ".join(f"`{n}`" for n in listed)
+         + "); the manifest does **not** list itself. Each entry carries "
+           "`name`, `format`, `key`, public `url`, and `size_bytes`.", ""]
     if ex:
         o += ["Example:", "", "```json", json.dumps(ex), "```", ""]
     return "\n".join(o)
@@ -353,6 +376,65 @@ def sec7():
     return "\n".join(o)
 
 
+def sec8():
+    """Per-task span inventory — the evidence layer under §6/§7's aggregates."""
+    o = ["## 8. Per-task span inventory", "",
+         "Which spans each task actually invoked, by name. §6 and §7 report *counts*; this is what "
+         "they were counted from, read straight out of each run's `span_report.ndjson`.", "",
+         "Read the **chat** column first. Every task issues a `max_tokens=1` capability probe plus "
+         "its real model calls, so a healthy task shows **at least 2** chat spans. Exactly **1** "
+         "means the usage-bearing span for the real call was never written — the warm-agent defect "
+         "— and that is visible here as a span *count*, independent of any token value (which is "
+         "what makes it catchable on claude-sonnet-5 and gemini-2.5-pro, where the surviving probe "
+         "reports a non-zero 8/1 or 1/0).", "",
+         "`not counted` are spans the aggregator cannot see: it only folds a chat/tool span into "
+         "`llm_count`/`tool_count` when its parent is the `invoke_agent` span, so anything nested "
+         "deeper is real work missing from the totals. A non-zero figure there is not a bug by "
+         "itself — it is the known blind spot, now measurable.", ""]
+    any_spans = False
+    for r in runs:
+        srows = rows(r, "span_report.ndjson")
+        o.append(f"### Run #{r['n']} — {r['bench']}  ·  `{r.get('run_id') or '—'}`")
+        o.append("")
+        if not srows:
+            o.append("_No `span_report.ndjson` for this run (predates the artifact, or MLflow was "
+                     "unavailable)._")
+            o.append("")
+            continue
+        any_spans = True
+        by_task: dict = {}
+        for s in srows:
+            by_task.setdefault(s.get("task_id"), []).append(s)
+        o.append("| task | spans | chat | tool | other | not counted | span names (xN) |")
+        o.append("|---|---:|---:|---:|---:|---:|---|")
+        for tid in sorted(by_task, key=_natkey):
+            ss = by_task[tid]
+            kinds: dict = {}
+            for s in ss:
+                kinds[s.get("kind")] = kinds.get(s.get("kind"), 0) + 1
+            names: dict = {}
+            for s in ss:
+                names[s.get("name")] = names.get(s.get("name"), 0) + 1
+            uncounted = sum(1 for s in ss if s.get("counted") is False)
+            nchat = kinds.get("chat", 0)
+            inventory = ", ".join(f"`{n}`" + (f" x{c}" if c > 1 else "")
+                                  for n, c in sorted(names.items(), key=lambda kv: -kv[1]))
+            o.append("| %s | %d | %s | %d | %d | %d | %s |" % (
+                tid, len(ss), f"**{nchat}** ⚠" if nchat == 1 else str(nchat),
+                kinds.get("tool", 0), kinds.get("other", 0), uncounted, inventory))
+        lost = [t for t, ss in by_task.items()
+                if sum(1 for s in ss if s.get("kind") == "chat") == 1]
+        if lost:
+            o.append("")
+            o.append(f"> ⚠ **{len(lost)} of {len(by_task)} tasks show a single `chat` span** — probe "
+                     "only, real call lost. Their token totals in §6/§7 are understated.")
+        o.append("")
+    if not any_spans:
+        return ("## 8. Per-task span inventory\n\n_No run in this set exported "
+                "`span_report.ndjson`; re-run against a Service that emits it._")
+    return "\n".join(o)
+
+
 GENERATED = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 head = [f"# Benchmarking Service — 12 Parameterized Runs ({PLATFORM})", "",
@@ -360,10 +442,11 @@ head = [f"# Benchmarking Service — 12 Parameterized Runs ({PLATFORM})", "",
         f"**Service version:** `{VERSION}`  ", f"**Target:** {data.get('base')}  ",
         f"**Runs executed:** {len(runs)}", "",
         "All numbers below are derived programmatically from the mirrored S3 artifacts "
-        "(`report.ndjson` / `token_report.ndjson` / `manifest.json`) — none are transcribed.", ""]
+        "(`report.ndjson` / `token_report.ndjson` / `span_report.ndjson` / `manifest.json`) — none "
+        "are transcribed.", ""]
 
 doc = "\n".join(head) + "\n" + "\n\n".join(
-    [sec_s3(), S1, S2, sec3(), sec4(), sec5(), sec6(), sec7()]) + "\n"
+    [sec_s3(), S1, S2, sec3(), sec4(), sec5(), sec6(), sec7(), sec8()]) + "\n"
 if OUT:
     OUT.write_text(doc)
     print(f"wrote {OUT} ({len(doc)} bytes, {len(runs)} runs)")

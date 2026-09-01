@@ -127,8 +127,11 @@ def s3_section(sets):
         o.append(f"| {b} | " + " | ".join(cells) + f" | `{sub}` |")
     o += ["",
           "Objects are readable **and listable anonymously**, so treat anything written here as "
-          "public: the keys expose the caller and Keycloak issuer host, and `report.ndjson` "
-          "contains task prompts and model outputs."]
+          "public. What is exposed: the **keys** carry the caller's username and the Keycloak issuer "
+          "host, and `run.json` / `report.ndjson` can carry **exception strings** from failed tasks. "
+          "No artifact contains task prompts or model outputs — the record schema is ids, counts and "
+          "durations, and `span_report.*` publishes only a fixed whitelist of structural/numeric "
+          "span fields."]
     return "\n".join(o)
 
 

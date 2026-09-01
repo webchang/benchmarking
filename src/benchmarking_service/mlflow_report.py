@@ -181,6 +181,44 @@ def _parse_attrs(node: dict) -> dict:
     return attrs if isinstance(attrs, dict) else {}
 
 
+# Span-name vocabulary. Shared by `parse_traces` (which aggregates) and `span_rows` (which
+# inventories) so the two cannot drift into disagreeing about what a span is.
+ROOT_SPAN = "Agent.Session"
+_PHASE_SPANS = ("MCP.CreateSession", "Agent.Call", "Evaluator.Evaluate")
+_AGENT_PREFIX = "invoke_agent"
+_CHAT_PREFIX = "chat "
+_TOOL_PREFIX = "execute_tool "
+INITIAL_OBS_SPAN = "execute_tool initial_observation"
+
+
+def _is_chat(name: str) -> bool:
+    return name.startswith(_CHAT_PREFIX)
+
+
+def _is_tool(name: str) -> bool:
+    """A tool *call* span. `initial_observation` is the harness priming the session, not a tool the
+    agent chose, so `parse_traces` excludes it from `tool_count` — mirror that here."""
+    return name.startswith(_TOOL_PREFIX) and name != INITIAL_OBS_SPAN
+
+
+def _span_kind(name: str) -> str:
+    """Coarse classification for the span inventory, so consumers can filter without string-matching.
+
+    `other` covers everything the harness does not name itself — nested HTTP/db/framework children.
+    """
+    if name == ROOT_SPAN:
+        return "root"
+    if name in _PHASE_SPANS:
+        return "phase"
+    if name.startswith(_AGENT_PREFIX):
+        return "agent"
+    if _is_chat(name):
+        return "chat"
+    if name.startswith(_TOOL_PREFIX):
+        return "tool"
+    return "other"
+
+
 def parse_traces(traces: list[dict]) -> list[MLflowTraceRecord]:
     """Aggregate each `Agent.Session` trace into a structured record.
 
@@ -195,7 +233,7 @@ def parse_traces(traces: list[dict]) -> list[MLflowTraceRecord]:
         root = None
         children = []
         for s in spans:
-            if s.get("name") == "Agent.Session":
+            if s.get("name") == ROOT_SPAN:
                 root = s
             else:
                 children.append(s)
@@ -255,11 +293,11 @@ def parse_traces(traces: list[dict]) -> list[MLflowTraceRecord]:
             latency_s = (s.get("latencyMs") or 0) / 1000.0
             if s.get("parentId") != invoke_span_id:
                 continue
-            if name.startswith("chat "):
+            if _is_chat(name):
                 chat_spans.append((s.get("startTime", ""), latency_s, s))
-            elif name == "execute_tool initial_observation":
+            elif name == INITIAL_OBS_SPAN:
                 initial_obs_start = s.get("startTime")
-            elif name.startswith("execute_tool "):
+            elif _is_tool(name):
                 record.tool_total_s += latency_s
                 record.tool_count += 1
 
@@ -332,6 +370,158 @@ def parse_traces(traces: list[dict]) -> list[MLflowTraceRecord]:
 
         records.append(record)
     return records
+
+
+# --- per-span inventory -----------------------------------------------------
+
+# The EXACT key set of every span row, in order. Two invariants depend on this being fixed and
+# exhaustive:
+#
+# 1. PRIVACY. `transform_spans` keeps every span attribute except those prefixed `mlflow.`, so the
+#    in-memory spans may carry `gen_ai.prompt.*`, `gen_ai.completion.*`, tool arguments and other
+#    content — and the S3 bucket these rows land in is public and anonymously listable. The agent is
+#    a third-party `:latest` image, so its attribute keys cannot be enumerated from this repo. We
+#    therefore project a positive whitelist and NEVER copy `attributes` wholesale. Span-level
+#    `statusMessage` is deliberately absent (exception text can echo a request body), as are
+#    `span["events"]` (which carry exception messages + stacktraces).
+# 2. PARQUET. `pa.Table.from_pylist` takes its column set from row 0 only, silently dropping keys
+#    that appear later, and raises on mixed types within a column. Emitting this key set on every
+#    row, always scalar-valued, keeps the NDJSON and Parquet views identical.
+SPAN_ROW_KEYS = (
+    "task_id",
+    "session_id",
+    "trace_id",
+    "span_id",
+    "parent_span_id",
+    "name",
+    "kind",
+    "parent_name",
+    "depth",
+    "start_time",
+    "latency_ms",
+    "status_code",
+    "error_type",
+    "counted",
+    "input_tokens",
+    "output_tokens",
+    "request_model",
+    "request_max_tokens",
+    "finish_reasons",
+)
+
+
+def _scalar(value, cast=None):
+    """Coerce to a scalar Parquet tolerates, or None. Lists become comma-joined strings so Arrow
+    never has to infer a list/struct type (a mixed-type column aborts the whole export)."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        if cast is not None and value is not None and not isinstance(value, bool):
+            try:
+                return cast(value)
+            except (TypeError, ValueError):
+                return None
+        return value
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(v) for v in value) or None
+    return str(value)
+
+
+def span_rows(traces: list[dict]) -> list[dict]:
+    """Flatten each `Agent.Session` trace into one row per span, keyed on `task_id`.
+
+    This is the evidence layer behind the aggregates in `parse_traces`: it answers "which spans did
+    this task actually invoke, and what were they called". The `counted` column is the point —
+    `parse_traces` only folds a `chat`/`execute_tool` span into `llm_count`/`tool_count` when its
+    parent is the `invoke_agent` span, so a span nested deeper is real work that the counters cannot
+    see. Publishing `counted` makes that filter auditable rather than folklore, and makes the
+    warm-agent span-loss defect legible: a healthy task shows two `chat` spans (the `max_tokens=1`
+    probe plus the real call), a damaged one shows only the probe.
+    """
+    rows: list[dict] = []
+    for trace in traces:
+        spans = trace.get("spans", [])
+        root = next((s for s in spans if s.get("name") == ROOT_SPAN), None)
+        if root is None:
+            continue
+
+        meta = _parse_attrs(root).get("metadata", {})
+        task_id = meta.get("task_id")
+        session_id = meta.get("session_id", "unknown")
+
+        by_id = {}
+        for s in spans:
+            span_id = (s.get("context") or {}).get("spanId")
+            if span_id:
+                by_id[span_id] = s
+
+        invoke_span_id = next(
+            (
+                (s.get("context") or {}).get("spanId")
+                for s in spans
+                if s.get("name", "").startswith(_AGENT_PREFIX)
+            ),
+            None,
+        )
+
+        def _depth(span: dict, _limit: int = 32) -> int:
+            """Hops up to the root. Bounded so a cyclic/orphaned parent chain cannot spin."""
+            depth = 0
+            seen: set[str] = set()
+            cur = span
+            while depth < _limit:
+                parent_id = cur.get("parentId")
+                if not parent_id or parent_id in seen or parent_id not in by_id:
+                    break
+                seen.add(parent_id)
+                cur = by_id[parent_id]
+                depth += 1
+            return depth
+
+        for s in spans:
+            name = s.get("name", "")
+            kind = _span_kind(name)
+            attrs = _parse_attrs(s)
+            gen_ai = attrs.get("gen_ai", {})
+            usage = gen_ai.get("usage", {}) if isinstance(gen_ai, dict) else {}
+            request = gen_ai.get("request", {}) if isinstance(gen_ai, dict) else {}
+            response = gen_ai.get("response", {}) if isinstance(gen_ai, dict) else {}
+            parent_id = s.get("parentId")
+            parent = by_id.get(parent_id) if parent_id else None
+
+            # Mirror parse_traces exactly: only chat/tool spans parented by invoke_agent are
+            # counted, and initial_observation never is.
+            counted = None
+            if kind in ("chat", "tool"):
+                counted = parent_id == invoke_span_id and (_is_chat(name) or _is_tool(name))
+
+            rows.append({
+                "task_id": _scalar(task_id),
+                "session_id": _scalar(session_id),
+                "trace_id": _scalar((s.get("context") or {}).get("traceId")),
+                "span_id": _scalar((s.get("context") or {}).get("spanId")),
+                "parent_span_id": _scalar(parent_id),
+                "name": _scalar(name),
+                "kind": kind,
+                "parent_name": _scalar(parent.get("name") if parent else None),
+                "depth": _depth(s),
+                "start_time": _scalar(s.get("startTime")),
+                "latency_ms": _scalar(s.get("latencyMs"), float),
+                "status_code": _scalar(s.get("statusCode")),
+                "error_type": _scalar((attrs.get("error") or {}).get("type")
+                                      if isinstance(attrs.get("error"), dict) else None),
+                "counted": counted,
+                "input_tokens": _scalar(usage.get("input_tokens"), int),
+                "output_tokens": _scalar(usage.get("output_tokens"), int),
+                "request_model": _scalar(request.get("model")),
+                "request_max_tokens": _scalar(request.get("max_tokens"), int),
+                "finish_reasons": _scalar(response.get("finish_reasons")),
+            })
+    return rows
+
+
+def filter_span_rows(rows: list[dict], session_ids: list[str]) -> list[dict]:
+    """Restrict span rows to this run's sessions — the `filter_by_sessions` equivalent."""
+    wanted = {sid for sid in session_ids if sid}
+    return [r for r in rows if r.get("session_id") in wanted]
 
 
 # --- report helpers ---------------------------------------------------------

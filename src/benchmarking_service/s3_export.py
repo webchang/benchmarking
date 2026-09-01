@@ -5,12 +5,16 @@ NDJSON (streaming-friendly) and Parquet (analytics-friendly), plus a `run.json` 
 hierarchical key so cross-service data groups naturally:
 
     <prefix>/<requester>/<source>/<benchmark>/<run_id>/
-        {run.json,report.ndjson,report.parquet,token_report.ndjson,token_report.parquet,manifest.json}
+        {run.json,report.ndjson,report.parquet,token_report.ndjson,token_report.parquet,
+         span_report.ndjson,span_report.parquet,manifest.json}
 
 `token_report.*` is a lean per-task token-utilization view (one row per benchmark task) projected
-from the full records — the go-to artifact for token accounting. `manifest.json` is a self-describing
-index of every data object at the run prefix (name/format/key/url/size_bytes) — one fetch to
-discover the whole run without an S3 listing.
+from the full records — the go-to artifact for token accounting. `span_report.*` is the evidence
+layer under both: one row per OTEL span per task, with the span's name, so a reader can see which
+spans a task actually invoked instead of trusting the aggregate counters (see
+`mlflow_report.span_rows`). `manifest.json` is a self-describing index of every data object at the
+run prefix (name/format/key/url/size_bytes) — one fetch to discover the whole run without an S3
+listing.
 
 - requester: the benchmarking caller's `preferred_username` (top level).
 - source:    the Service's benchmarker `iss`, encoded — distinguishes each Service in use.
@@ -152,9 +156,11 @@ def _export_sync(
     benchmark: str,
     record_dicts: list[dict],
     run_summary: dict,
+    span_dicts: list[dict] | None = None,
 ) -> list[RunArtifact]:
     client = _make_client(cfg)
     token_dicts = _token_rows(record_dicts)
+    span_dicts = span_dicts or []
     planned: list[tuple[str, str, bytes]] = [
         ("run.json", "json", json.dumps(run_summary, separators=(",", ":")).encode("utf-8")),
         ("report.ndjson", "ndjson", _ndjson_bytes(record_dicts)),
@@ -162,10 +168,22 @@ def _export_sync(
         # instead of wading through the full trace records for token accounting.
         ("token_report.ndjson", "ndjson", _ndjson_bytes(token_dicts)),
     ]
+    if span_dicts:
+        # Per-span inventory (one row per OTEL span per task) — the evidence behind the aggregates.
+        planned.append(("span_report.ndjson", "ndjson", _ndjson_bytes(span_dicts)))
     # Parquet needs a schema, which we infer from the rows — skip it when there are no records.
     if record_dicts:
         planned.append(("report.parquet", "parquet", _parquet_bytes(record_dicts)))
         planned.append(("token_report.parquet", "parquet", _parquet_bytes(token_dicts)))
+    if span_dicts:
+        # Isolated: span rows come straight from third-party agent spans, so an unexpected value
+        # could trip pyarrow's type inference. Everything here is built before ANY upload happens,
+        # so letting that raise would lose the whole export (report + tokens + summary) over a
+        # secondary artifact. Degrade to NDJSON-only instead.
+        try:
+            planned.append(("span_report.parquet", "parquet", _parquet_bytes(span_dicts)))
+        except Exception:  # noqa: BLE001 - never sacrifice the export for the span parquet
+            logger.exception("run %s: span_report.parquet failed; keeping NDJSON only", run_id)
 
     def _ref(name: str, fmt: str, body: bytes) -> RunArtifact:
         key = f"{prefix}/{name}"
@@ -206,11 +224,14 @@ async def export_run(
     run_id: str,
     records: list,
     run_summary: dict,
+    span_dicts: list[dict] | None = None,
 ) -> list[RunArtifact]:
     """Upload a run's NDJSON/Parquet/summary to S3; return the object references.
 
     Runs entirely on a worker thread (boto3 + pyarrow are synchronous). `records` are
     `MLflowTraceRecord`s (or anything with `.model_dump()`); they're flattened to dicts here.
+    `span_dicts` are already-flat per-span rows from `mlflow_report.span_rows`; when empty the
+    span artifacts are simply omitted.
     """
     prefix = run_prefix(cfg, preferred_username, source_iss, benchmark, run_id)
     record_dicts = [r.model_dump(mode="json") for r in records]
@@ -222,4 +243,5 @@ async def export_run(
         benchmark=benchmark,
         record_dicts=record_dicts,
         run_summary=run_summary,
+        span_dicts=span_dicts,
     )

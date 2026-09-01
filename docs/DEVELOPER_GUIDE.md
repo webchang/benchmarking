@@ -383,10 +383,21 @@ objects appear in the run state under `artifacts[]` (and in the per-run report).
 
 ```
 <prefix>/<preferred_username>/<encoded-iss>/<benchmark>/<run_id>/
-    run.json         # the run summary (always written)
-    report.ndjson    # one record per line (empty if MLflow unconfigured)
-    report.parquet   # analytics-friendly (only when there are records)
+    run.json                # the run summary (always written)
+    report.ndjson           # one record per task (empty if MLflow unconfigured)
+    report.parquet          # analytics-friendly (only when there are records)
+    token_report.ndjson     # lean per-task token view, projected from the records
+    token_report.parquet
+    span_report.ndjson      # one row per OTEL span per task, incl. the span name
+    span_report.parquet
+    manifest.json           # self-describing index of the above (never lists itself)
 ```
+
+`span_report.*` is the evidence layer under the other two: `report`/`token_report` give per-task
+*counts*, `span_report` gives the spans those counts were derived from, so "did this task really
+make one model call, or did we lose a span?" is answerable from the artifacts alone. Its columns are
+a fixed whitelist (`mlflow_report.SPAN_ROW_KEYS`) — span attributes can carry prompts, and these
+objects are public-read, so nothing outside that list is published.
 
 Grab the keys/URLs straight from the run state, then download:
 

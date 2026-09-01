@@ -398,7 +398,7 @@ steps = [
     ("POST /benchmarks/{n}/runs", "precheck → 202 run_id  (409 not deployed · 424 secret missing)"),
     ("GET …/runs/{id}", "poll pending → running → succeeded / failed"),
     ("GET …/runs/{id}/report", "MLflow records + artifacts  (409 if MLflow unset)"),
-    ("download from S3", "run.json · report.ndjson · report.parquet"),
+    ("download from S3", "run.json · report.* · token_report.* · span_report.* · manifest.json"),
 ]
 y = inch(1.95)
 for i, (ep, desc) in enumerate(steps):
