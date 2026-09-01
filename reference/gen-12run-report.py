@@ -20,6 +20,30 @@ data = json.loads(SRC.read_text())
 runs = sorted(data["runs"], key=lambda r: r["n"])
 
 
+def _stats(vals):
+    """(median, mean, CV) over a run's per-task values.
+
+    `median` is the robust centre; `mean` is the arithmetic average — for tau2/appworld the two
+    diverge because task cost is strongly right-skewed (a few long episodes drag the mean above the
+    median), and that gap is itself informative. `CV` = population sigma / mean, so it shares its
+    denominator with `mean`, not `median`. CV is undefined for n < 2 or mean == 0.
+    """
+    n = len(vals)
+    if n == 0:
+        return None, None, None
+    s = sorted(vals)
+    median = s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+    mean = sum(vals) / n
+    if n < 2 or mean == 0:
+        return median, mean, None
+    var = sum((v - mean) ** 2 for v in vals) / n
+    return median, mean, (var ** 0.5) / mean
+
+
+def _fmt(v, spec="%.0f"):
+    return "—" if v is None else spec % v
+
+
 def rows(run, name):
     d = run.get("mirror_dir")
     if not d:
@@ -146,20 +170,29 @@ def sec5():
 
 def sec6():
     o = ["## 6. Per-run aggregate — input & output tokens", "",
-         "| # | Benchmark | Model | Tasks | LLM calls | Input | Output | Total | In/task | Out/task |",
-         "|---|---|---|---:|---:|---:|---:|---:|---:|---:|"]
+         "`median` then `mean` then `CV` for each direction. median is the robust centre, mean the "
+         "arithmetic average, and a mean well above the median signals right-skew (a few long "
+         "tasks). `CV` is population sigma / mean, i.e. how unevenly the token cost is spread; it "
+         "shares its denominator with `mean`, not `median`. CV is `—` for single-task runs.", "",
+         
+         "| # | Benchmark | Model | Tasks | LLM calls | Input | Output | Total | IN median | IN mean | IN CV | OUT median | OUT mean | OUT CV |",
+         "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for r in runs:
         rr = rows(r, "report.ndjson")
         if not rr:
-            o.append("| %s | %s | — | 0 | — | — | — | — | — | — |" % (r["n"], r["bench"]))
+            o.append("| %s | %s | — | 0 | — | — | — | — | — | — | — | — | — | — |" % (r["n"], r["bench"]))
             continue
-        i = sum(x.get("llm_input_tokens", 0) or 0 for x in rr)
-        ou = sum(x.get("llm_output_tokens", 0) or 0 for x in rr)
+        iv = [x.get("llm_input_tokens", 0) or 0 for x in rr]
+        ov = [x.get("llm_output_tokens", 0) or 0 for x in rr]
+        i, ou = sum(iv), sum(ov)
         c = sum(x.get("llm_count", 0) or 0 for x in rr)
         models = sorted({x.get("model") for x in rr if x.get("model")}) or ["—"]
-        o.append("| %s | %s | %s | %d | %d | %d | %d | %d | %d | %d |" % (
+        imed, imean, icv = _stats(iv)
+        omed, omean, ocv = _stats(ov)
+        o.append("| %s | %s | %s | %d | %d | %d | %d | %d | %s | %s | %s | %s | %s | %s |" % (
             r["n"], r["bench"], ", ".join(models), len(rr), c, i, ou, i + ou,
-            i // len(rr), ou // len(rr)))
+            _fmt(imed), _fmt(imean), _fmt(icv, "%.2f"),
+            _fmt(omed), _fmt(omean), _fmt(ocv, "%.2f")))
     return "\n".join(o)
 
 
