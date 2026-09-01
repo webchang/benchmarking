@@ -49,6 +49,7 @@ ONLY = {int(x) for x in os.environ["BM_ONLY"].split(",")} if os.environ.get("BM_
 CARD_TEMPLATE = os.environ.get("BM_CARD_TEMPLATE")
 SETTLE_PLAIN = float(os.environ.get("BM_SETTLE_PLAIN", "15"))
 SETTLE_SIDECAR = float(os.environ.get("BM_SETTLE_SIDECAR", "45"))
+STABLE_POLLS = int(os.environ.get("BM_STABLE_POLLS", "4"))
 MIRROR = pathlib.Path("/tmp/benchmarking")
 SPECS = pathlib.Path(__file__).with_name("run12_specs.json")
 
@@ -70,11 +71,18 @@ def _req(url, data=None, headers=None, method=None, timeout=120, form=False):
     else:
         body = data
     r = urllib.request.Request(url, data=body, headers=headers or {}, method=method)
-    try:
-        with urllib.request.urlopen(r, timeout=timeout, context=_CTX) as resp:
-            return resp.status, resp.read()
-    except urllib.error.HTTPError as e:
-        return e.code, e.read()
+    # Retry transient transport failures (a local DNS blip once killed a whole run).
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(r, timeout=timeout, context=_CTX) as resp:
+                return resp.status, resp.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+        except urllib.error.URLError as e:
+            if attempt == 2:
+                raise
+            log(f"  transport error ({e.reason}); retrying in 10s")
+            time.sleep(10)
 
 
 def token() -> str:
@@ -104,6 +112,7 @@ def deploy(bench, H, body, wait_s=1800, sidecar=False):
         return False, b[:400].decode(errors="replace")
     deadline = time.time() + wait_s
     last = ""
+    stable = 0
     while time.time() < deadline:
         st, b = _req(f"{BASE}/benchmarks/{bench}/status", None, H, "GET", timeout=90)
         try:
@@ -115,8 +124,18 @@ def deploy(bench, H, body, wait_s=1800, sidecar=False):
             log(f"  status {cur}")
             last = cur
         if s.get("tool_ready") and s.get("agent_ready"):
-            return _warm_up(s, sidecar)
-        time.sleep(10)
+            # A SINGLE ready reading is not enough. tau2/appworld agents hard-exit when their MCP
+            # is not serving yet, so the agent flaps Ready -> CrashLoopBackOff -> Ready. A run
+            # accepted during a flap dies with "run was interrupted ... 0 task(s) recorded".
+            # Require several consecutive ready readings so we only proceed once it has settled.
+            stable += 1
+            if stable >= STABLE_POLLS:
+                return _warm_up(s, sidecar)
+            log(f"  ready {stable}/{STABLE_POLLS} — confirming stability")
+        elif stable:
+            log(f"  readiness flapped after {stable} ok poll(s) — resetting")
+            stable = 0
+        time.sleep(15)
     return False, f"not ready within {wait_s}s ({last})"
 
 
@@ -179,8 +198,17 @@ def execute(spec, H):
             return rec
 
     log(f"  POST run {json.dumps(body)}")
-    st, b = _req(f"{BASE}/benchmarks/{bench}/runs", body, H, "POST",
-                 timeout=body.get("timeout_seconds", 600) + 600)
+    # 424 means the workloads are not Ready yet. It is transient and self-heals: an agent whose
+    # MCP was not serving at startup exits, CrashLoopBackOffs, and connects on a later retry once
+    # the MCP is up (tau2's MCP is slow — VenvRunner setup). Observed on kind: 3 agent restarts,
+    # then Ready. So retry rather than losing the run.
+    for attempt in range(6):
+        st, b = _req(f"{BASE}/benchmarks/{bench}/runs", body, H, "POST",
+                     timeout=body.get("timeout_seconds", 600) + 600)
+        if st != 424:
+            break
+        log(f"  run rejected 424 (workloads not Ready) — attempt {attempt + 1}/6, waiting 60s")
+        time.sleep(60)
     rec["run_http"] = st
     if st >= 400:
         rec["status"] = "run_rejected"
