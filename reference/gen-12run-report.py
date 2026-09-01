@@ -390,7 +390,12 @@ def sec8():
          "`not counted` are spans the aggregator cannot see: it only folds a chat/tool span into "
          "`llm_count`/`tool_count` when its parent is the `invoke_agent` span, so anything nested "
          "deeper is real work missing from the totals. A non-zero figure there is not a bug by "
-         "itself — it is the known blind spot, now measurable.", ""]
+         "itself — it is the known blind spot, now measurable.", "",
+         "The **names** column lists only harness-named spans (`root`/`phase`/`agent`/`chat`/`tool`). "
+         "The `other` column counts the rest — A2A/HTTP framework internals such as "
+         "`EventQueue.dequeue_event`, which dominate the raw count (a single gsm8k task emits ~98 "
+         "spans, ~90 of them framework noise) and would swamp this table. They are all present in "
+         "`span_report.ndjson`; this section is the readable summary, not the full tree.", ""]
     any_spans = False
     for r in runs:
         srows = rows(r, "span_report.ndjson")
@@ -414,7 +419,8 @@ def sec8():
                 kinds[s.get("kind")] = kinds.get(s.get("kind"), 0) + 1
             names: dict = {}
             for s in ss:
-                names[s.get("name")] = names.get(s.get("name"), 0) + 1
+                if s.get("kind") != "other":  # framework internals: counted, not enumerated
+                    names[s.get("name")] = names.get(s.get("name"), 0) + 1
             uncounted = sum(1 for s in ss if s.get("counted") is False)
             nchat = kinds.get("chat", 0)
             inventory = ", ".join(f"`{n}`" + (f" x{c}" if c > 1 else "")
