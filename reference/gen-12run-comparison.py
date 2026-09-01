@@ -39,6 +39,20 @@ def f(v, spec="%.0f"):
     return "—" if v is None else spec % v
 
 
+def lost(x):
+    """True when the task's usage-bearing `chat` span was never written (tokens understated).
+
+    A `tokens == 0` test is not sufficient: it only catches reasoning models, whose `max_tokens=1`
+    probe fails and records no usage. On claude-sonnet-5 / gemini-2.5-pro the probe *succeeds*, so
+    the damaged row carries the probe's own tiny usage (`8/1`, `1/0`) and reads as non-zero. The
+    model-independent signal is structural — `llm_count <= 1` with `tool_count >= 2` is impossible,
+    because every tool call needs a preceding model turn.
+    """
+    lc = x.get("llm_count") or 0
+    tc = x.get("tool_count") or 0
+    return (lc > 0 and not x.get("llm_input_tokens")) or (lc <= 1 and tc >= 2)
+
+
 def load(path):
     d = json.loads(pathlib.Path(path).read_text())
     out = {}
@@ -68,7 +82,7 @@ def load(path):
                   + [man["prefix"].rstrip("/") + "/manifest.json"]) if man else [],
             urlroot=next((a["url"][: -len(a["key"])] for a in (man or {}).get("artifacts", [])
                           if a.get("url", "").endswith(a["key"])), ""),
-            z=sum(1 for x in rows if (x.get("llm_count") or 0) > 0 and not x.get("llm_input_tokens")))
+            z=sum(1 for x in rows if lost(x)))
     return out, d.get("base")
 
 
@@ -183,8 +197,9 @@ L += ["", "## Totals", "",
       f"- input tokens: {ALAB} {ti:,} · {BLAB} {tk:,}",
       f"- output tokens: {ALAB} {to:,} · {BLAB} {ko:,}",
       f"- wall: {ALAB} {wo:.0f}s · {BLAB} {wk:.0f}s",
-      f"- zero-token rows: {ALAB} {zx}/{rx} · {BLAB} {zy}/{ry}"
-      + ("  — **token capture complete on both sides**" if not zx and not zy else "  — **investigate**"),
+      f"- rows with lost token attribution: {ALAB} {zx}/{rx} · {BLAB} {zy}/{ry}"
+      + ("  — **token capture complete on both sides**" if not zx and not zy else
+         "  — **those runs' token totals are understated; pass rates are unaffected**"),
       "", "## What matches", "",
       f"- **{len(same)} of {len(X)} pass rates identical**: {', '.join('#%d' % n for n in same)}.",
       f"- **{len(ident)} runs have byte-identical input-token totals**: "
@@ -196,9 +211,17 @@ L += ["", "## Totals", "",
       f"{', '.join('#%d (%+.2f)' % (n, Y[n]['p'] - X[n]['p']) for n in diff if Y.get(n, {}).get('p') is not None)}.",
       "- Interpret small deltas on small runs with care: one task on a 5-task run moves pass_rate by",
       "  0.20. tau2 and appworld are additionally nondeterministic per episode.",
-      "", "## Caveat on the `llm` column", "",
+      "", "## Caveats on the `llm` column and on token totals", "",
       "Each task issues an extra `max_tokens=1` probe call that is counted as a `chat` span, so",
-      "LLM-call counts read one high per task. See `docs/exgentic-agent-bug-report-20260901.md`."]
+      "LLM-call counts read one high per task.",
+      "",
+      "Whether that probe *succeeds* is model-dependent, and it determines how a lost-span row looks:",
+      "a reasoning model (`gpt-5-mini`) has the probe rejected and records no usage (`in=out=0`),",
+      "while `claude-sonnet-5` / `gemini-2.5-pro` accept it and record the probe's own usage",
+      "(`in=8/out=1`, `in=1/out=0`). So a `tokens == 0` check silently misses the latter two; the",
+      "detector used above is structural instead (`llm<=1` with `tool>=2` is impossible).",
+      "Any leg counted above has **understated** token totals — pass rates remain valid.",
+      "See `docs/exgentic-agent-bug-report-20260901.md`."]
 
 doc = "\n".join(L) + "\n"
 if OUT:

@@ -8,6 +8,11 @@ task actually involves, and what they look like in practice.
 All the "measured" figures below come from our own v1.23 runs (272 tasks across two clusters:
 OpenShift `ykt3→ykt2` and single-node KinD), not from the benchmarks' published papers.
 
+Per-task token averages are computed over the **237 rows with intact telemetry**, excluding 15 rows
+whose usage-bearing span was lost (see the last bullet of "How to read our reports"). Including them
+understates tau2 by 17% and appworld by 12%; pass rates and latencies use all 272 rows, since those
+are unaffected.
+
 ---
 
 ## At a glance
@@ -15,27 +20,36 @@ OpenShift `ykt3→ykt2` and single-node KinD), not from the benchmarks' publishe
 | | **gsm8k** | **tau2** | **appworld** |
 |---|---|---|---|
 | What it tests | multi-step arithmetic reasoning | multi-turn dialogue + tool use | long-horizon app automation |
-| Tasks measured | 172 | 60 | 40 |
+| Tasks measured | 172 | 60 (50 clean) | 40 (35 clean) |
 | **Pass rate** | **0.98** | **0.83** | **0.00** |
-| Input tokens / task | **343** | **69,139** | **184,443** |
-| Output tokens / task | 205 | 1,629 | 18,811 |
-| LLM calls / task | 2.1 | 9.7 | 20.8 |
-| Tool calls / task | 1.1 | 11.3 | 13.6 |
-| Median task latency | **5.3s** | **92s** | **242s** |
+| Input tokens / task | **343** | **82,966** | **210,792** |
+| Output tokens / task | 205 | 1,955 | 21,499 |
+| LLM calls / task | 2.1 | 11.4 | 23.6 |
+| Tool calls / task | 1.1 | 11.2 | 13.4 |
+| Median task latency | **5.3s** | **92s** | **232s** |
 | Slowest task seen | 62s | 425s | 581s |
 | Model we use | gpt-5-mini (or gpt-4.1) | claude-sonnet-5 | gemini-2.5-pro |
+| Task pool | 8.5K problems (HuggingFace) | 114 (`retail` domain) | grouped scenarios |
 | `task_id` format | integer (`0`, `1`, …) | integer (`0`, `1`, …) | `21abae1_1` |
 
-The headline is the **scale gap**: a tau2 task costs ~200× the input tokens of a gsm8k task, and an
-appworld task ~540×. Choose accordingly — a 50-task gsm8k run is a couple of minutes; a 20-task
+The headline is the **scale gap**: a tau2 task costs ~240× the input tokens of a gsm8k task, and an
+appworld task ~615×. Choose accordingly — a 50-task gsm8k run is a couple of minutes; a 20-task
 appworld run is half an hour and millions of tokens.
 
 ---
 
 ## gsm8k — the smoke test
 
-**What it is.** GSM8K ("Grade School Math 8K") is a well-known set of grade-school maths word
-problems that need several arithmetic steps. Each problem has one correct numeric answer.
+**What it is.** GSM8K — **"Grade School Math 8K"**, where the *8K* is the dataset size: ~8.5K
+problems (7,473 train + 1,319 test). They are grade-school maths word problems needing **2–8
+elementary steps** (+ − × ÷); no algebra or geometry. Each has one correct numeric answer, graded by
+**exact match**. The difficulty is not the arithmetic but carrying a multi-step chain without
+slipping — which is why it became a standard reasoning probe.
+
+**Where the data comes from.** The MCP (`ghcr.io/exgentic/exgentic-mcp-gsm8k`) loads the dataset from
+**HuggingFace** at startup. That is why an `hf-secret` must *exist* in the namespace even with an
+empty value (the dataset is public) — without it the MCP pod sits in `CreateContainerConfigError` and
+the agent crash-loops.
 
 **What one task looks like.** The agent receives a word problem, thinks, then calls a tool to submit
 its answer. In our harness a typical task is **one real LLM call and one tool call** — it is close to
@@ -55,6 +69,13 @@ that two environments are genuinely comparable.
 
 **What it is.** τ²-bench evaluates an agent acting as a support agent in a tool-backed domain: it
 must hold a **multi-turn conversation** while calling domain APIs to actually accomplish the request.
+
+**Which domain.** τ²-bench ships four — `mock`, `retail`, `airline`, `telecom`. We set **no** subset
+override, so we get the library default: **`retail`** (114 tasks). tau2 `task_id`s are that domain's
+own ids, so `task_id` 0–19 are the first 20 *retail* tasks. Worth stating explicitly whenever you
+quote a tau2 number, because **the domain is not recorded in the artifacts** — it is only inferable
+from the absence of an override. Switching domains would change the numbers, and `airline` has only
+50 tasks, so `max_tasks` above that would silently cap.
 
 **The key architectural difference.** tau2 introduces a **second LLM — a user simulator** that plays
 the customer. So each task involves two models talking to each other, plus tool calls. That single
@@ -114,9 +135,17 @@ A few things that trip people up:
 - **Task selection is deterministic.** A run takes the first `max_tasks` tasks, so the same
   `task_id` is the same task across runs and clusters, and a smaller run's tasks are a prefix of a
   larger one's. Cross-run comparisons on the same benchmark are therefore like-for-like.
-- **`0` tokens with a nonzero `llm` count is a telemetry bug, not a cheap task.** See
-  `docs/exgentic-agent-bug-report-20260901.md`. If you see it, the run's token numbers are
-  understated and should not be used.
+- **Implausibly small token counts are a telemetry bug, not a cheap task — and `== 0` is the wrong
+  test.** When a task's usage-bearing span is lost, what survives is the `max_tokens=1` probe, and
+  the probe's *own* usage depends on the model: a reasoning model (gpt-5-mini) has the probe
+  rejected and records nothing (`in=0, out=0` — the familiar "zero-token row"), but
+  claude-sonnet-5 accepts it and leaves `in=8, out=1`, and gemini-2.5-pro leaves `in=1, out=0`.
+  Those are *non-zero*, so a zero-check misses every tau2 and appworld case. Use the structural
+  test instead: **`llm` ≤ 1 alongside `tool` ≥ 2 is impossible**, since each tool call needs a
+  preceding model turn. `llm=1` next to `tool=11` is a lost span. Affected runs' **token totals are
+  understated while their pass rates remain valid** — the tasks really ran and were really judged.
+  Cause and fix (fresh deploy per run, no warm-agent reuse):
+  `docs/exgentic-agent-bug-report-20260901.md`.
 
 ## Picking a benchmark
 

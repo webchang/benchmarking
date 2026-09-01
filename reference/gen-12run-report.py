@@ -10,6 +10,7 @@ derived from the artifacts — nothing is transcribed by hand.
 import json
 import os
 import pathlib
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -46,6 +47,36 @@ def _fmt(v, spec="%.0f"):
     return "—" if v is None else spec % v
 
 
+def _natkey(tid):
+    """Sort task ids naturally: plain string sort puts tau2's "10" between "1" and "2", which makes
+    the per-task tables hard to scan. Handles appworld's `<hash>_<n>` form too."""
+    return [(0, int(p)) if p.isdigit() else (1, p) for p in re.split(r"(\d+)", str(tid)) if p]
+
+
+def _lost(x):
+    """True when the task's usage-bearing `chat` span was never written, so its token counts are
+    understated.
+
+    Two presentations of the SAME upstream defect, and the token value alone does not identify it:
+
+    * reasoning models (gpt-5-mini) reject the `max_tokens=1` probe, so the surviving probe span
+      carries no usage at all -> `in == out == 0`. This is the familiar "zero-token row".
+    * non-reasoning models (claude-sonnet-5, gemini-2.5-pro) *accept* the probe, so the probe span
+      carries its own tiny usage -> `in=8/out=1` or `in=1/out=0`. Non-zero, so a `== 0` test misses
+      it entirely.
+
+    The reliable, model-independent signal is structural: every tool call must be decided by a
+    preceding model turn, so `llm_count <= 1` alongside `tool_count >= 2` is impossible for a task
+    that genuinely made those tool calls. Verified against all 272 rows of the v1.23 matrices: it
+    flags exactly the 15 damaged rows and no healthy one (healthy rows may still have
+    `tool_count > llm_count` — up to +21 on appworld — which is why a plain `tool > llm` test is
+    NOT usable).
+    """
+    lc = x.get("llm_count") or 0
+    tc = x.get("tool_count") or 0
+    return (lc > 0 and not x.get("llm_input_tokens")) or (lc <= 1 and tc >= 2)
+
+
 def rows(run, name):
     d = run.get("mirror_dir")
     if not d:
@@ -73,6 +104,7 @@ S1 = """## 1. Terms
 | **Trace / Agent.Session** | Exactly one `Agent.Session` root span per task, keyed by `task_id`. Token usage is parsed from the `chat` (LLM) spans under that root — hence one `token_report` row per task. |
 | **Session (`session_id`)** | The per-task MCP session handle from `create_session`. Distinct from `run_id` and `task_id`. |
 | **appworld `<hash>_<n>` task ids** | appworld groups several tasks under one base scenario/world (e.g. `3d9a636_1/_2/_3`); each still runs as an independent session. |
+| **tau2 domain / subset** | τ²-bench ships four domains (`mock`, `retail`, `airline`, `telecom`). We set **no** subset override, so every tau2 run here uses the library default — **`retail`**, 114 tasks. tau2 `task_id`s are that domain's own ids (`"0"`…`"113"`), so `task_id` 0–19 = the first 20 **retail** tasks. Domain is *not* recorded in the artifacts; it is only inferable from the absence of an override, so state it explicitly when quoting tau2 numbers. |
 """
 
 S2 = """## 2. Column names & meaning
@@ -85,13 +117,30 @@ S2 = """## 2. Column names & meaning
 | `in` | `llm_input_tokens` | Sum of `gen_ai.usage.input_tokens` over **all** LLM chat calls in that task. |
 | `out` | `llm_output_tokens` | Sum of `gen_ai.usage.output_tokens` over all LLM chat calls in that task. |
 | `total` | `llm_total_tokens` | `in + out` for the task. |
-| `llm` | `llm_count` | Number of LLM (chat-completion) calls the agent made. One per `chat` span. |
+| `llm` | `llm_count` | Number of LLM (chat-completion) calls the agent made. One per `chat` span. **Overcounts real calls by 1** — see below. |
+| `tool` | `tool_count` | Number of MCP tool calls the agent made. |
 | `passed` | `evaluation_result` | Task-level pass/fail from `evaluate_session` (`None` = errored before eval). |
 
-**Zero-token rows:** `llm>=1` with `in=out=0` means a chat span was recorded without `gen_ai.usage`
-attributes. Historically that was the agent-runner/OTEL-context defect at
-`max_parallel_sessions > 1`; it is fixed by the `workload_agent_runner` instance override, so a
-non-zero count here should be investigated, not assumed benign. `llm=0` means no chat span at all
+**Every task issues one extra `max_tokens=1` capability probe**, counted as a `chat` span. So `llm`
+reads one high: `llm=2` on gsm8k means *one* real call. Whether that probe succeeds is
+model-dependent, which matters for the next paragraph.
+
+**Rows marked ⚠ have lost token attribution** — the usage-bearing `chat` span for the real call was
+never written, so `in`/`out` are understated (the task itself ran fine: `tool`, latency and
+`passed` are all genuine). The token value alone does not identify these, because the same defect
+presents differently per model:
+
+| model class | probe outcome | damaged row looks like |
+|---|---|---|
+| reasoning (`gpt-5-mini`) | rejected, `BadRequestError`, no usage | `in=0, out=0` — the classic "zero-token row" |
+| non-reasoning (`claude-sonnet-5`) | **succeeds**, so the probe's own usage is recorded | `in=8, out=1` |
+| non-reasoning (`gemini-2.5-pro`) | **succeeds** | `in=1, out=0` |
+
+A `tokens == 0` test therefore silently misses the sonnet-5/gemini cases. The detector used here is
+structural instead: **`llm<=1` together with `tool>=2` is impossible**, since every tool call needs
+a preceding model turn. Trigger: reusing a warm agent across runs (upstream exgentic tears down the
+per-process OTEL context at run end) — see `docs/exgentic-agent-bug-report-20260901.md`. Mitigation
+is a fresh deploy per run. `llm=0` with `tool=0` is different and benign-ish: no chat span at all
 (session rejected before any model call).
 
 ### Run-summary fields (`RunSummary`, shown in §4)
@@ -204,14 +253,20 @@ def sec4():
             s.get("pass_rate", "—"), s.get("evaluated_pass", "—"),
             err, s.get("total", "—"),
             round(s["wall_seconds"]) if s.get("wall_seconds") is not None else "—"))
-    bad = [(r["n"], sum(1 for x in rows(r, "report.ndjson")
-                        if (x.get("llm_count") or 0) > 0 and not x.get("llm_input_tokens")))
+    bad = [(r["n"], sum(1 for x in rows(r, "report.ndjson") if _lost(x)), len(rows(r, "report.ndjson")))
            for r in runs]
-    bad = [(n, c) for n, c in bad if c]
+    tot = sum(c for _, c, _ in bad)
+    allrows = sum(t for _, _, t in bad)
+    bad = [(n, c, t) for n, c, t in bad if c]
     o.append("")
-    o.append("**Zero-token rows:** " + ("none — token capture is complete across all runs."
-             if not bad else ", ".join(f"#{n}: {c}" for n, c in bad) +
-             " (investigate: see §2)"))
+    if not bad:
+        o.append("**Token attribution:** complete — no row lost its usage-bearing span.")
+    else:
+        o.append(f"**⚠ Lost token attribution: {tot} of {allrows} rows** — "
+                 + ", ".join(f"#{n} ({c}/{t} tasks)" for n, c, t in bad)
+                 + ". Those runs' **token totals are understated** (pass rates are not affected — "
+                   "the tasks ran and were evaluated normally). See §2 for the detector and why a "
+                   "`tokens == 0` check does not catch it on claude-sonnet-5 / gemini-2.5-pro.")
     return "\n".join(o)
 
 
@@ -234,13 +289,16 @@ def sec6():
          "arithmetic average, and a mean well above the median signals right-skew (a few long "
          "tasks). `CV` is population sigma / mean, i.e. how unevenly the token cost is spread; it "
          "shares its denominator with `mean`, not `median`. CV is `—` for single-task runs.", "",
-         
-         "| # | Benchmark | Model | Tasks | LLM calls | Input | Output | Total | IN median | IN mean | IN CV | OUT median | OUT mean | OUT CV |",
-         "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+         "A `⚠` in the Lost column means some of that run's rows lost their usage-bearing span (§2), "
+         "so **every token figure on that row is understated** — including the median/mean/CV, which "
+         "are computed over all tasks and so are dragged down by the damaged ones. Do not quote them "
+         "as the run's cost.", "",
+         "| # | Benchmark | Model | Tasks | Lost | LLM calls | Input | Output | Total | IN median | IN mean | IN CV | OUT median | OUT mean | OUT CV |",
+         "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for r in runs:
         rr = rows(r, "report.ndjson")
         if not rr:
-            o.append("| %s | %s | — | 0 | — | — | — | — | — | — | — | — | — | — |" % (r["n"], r["bench"]))
+            o.append("| %s | %s | — | 0 | — | — | — | — | — | — | — | — | — | — | — |" % (r["n"], r["bench"]))
             continue
         iv = [x.get("llm_input_tokens", 0) or 0 for x in rr]
         ov = [x.get("llm_output_tokens", 0) or 0 for x in rr]
@@ -249,15 +307,24 @@ def sec6():
         models = sorted({x.get("model") for x in rr if x.get("model")}) or ["—"]
         imed, imean, icv = _stats(iv)
         omed, omean, ocv = _stats(ov)
-        o.append("| %s | %s | %s | %d | %d | %d | %d | %d | %s | %s | %s | %s | %s | %s |" % (
-            r["n"], r["bench"], ", ".join(models), len(rr), c, i, ou, i + ou,
+        nlost = sum(1 for x in rr if _lost(x))
+        o.append("| %s | %s | %s | %d | %s | %d | %d | %d | %d | %s | %s | %s | %s | %s | %s |" % (
+            r["n"], r["bench"], ", ".join(models), len(rr),
+            f"⚠ {nlost}" if nlost else "0", c, i, ou, i + ou,
             _fmt(imed), _fmt(imean), _fmt(icv, "%.2f"),
             _fmt(omed), _fmt(omean), _fmt(ocv, "%.2f")))
     return "\n".join(o)
 
 
 def sec7():
-    o = ["## 7. Per-task detail", ""]
+    o = ["## 7. Per-task detail", "",
+         "`model` is repeated on every row deliberately: token counts are only comparable within a "
+         "model, and the runs do not all use the same one (#4 swaps the gsm8k model, so its ~815 "
+         "input tokens per task are not comparable with the ~320 of #1–3/#5–8 on the same tasks).",
+         "",
+         "`tool` is shown next to `llm` because their relationship is the tell for a damaged row: "
+         "each tool call needs a preceding model turn, so `llm=1` beside `tool=11` cannot be real "
+         "work — it is a lost span (§2), flagged `⚠`.", ""]
     for r in runs:
         rr = rows(r, "report.ndjson")
         o.append(f"### Run #{r['n']} — {r['bench']}  ·  `{r.get('run_id') or '—'}`")
@@ -266,13 +333,22 @@ def sec7():
             o.append("_No trace rows (run did not produce a report)._")
             o.append("")
             continue
-        o.append("| task | in | out | total | llm | passed |")
-        o.append("|---|---:|---:|---:|---:|---|")
-        for x in sorted(rr, key=lambda y: str(y.get("task_id"))):
+        o.append("| task | model | in | out | total | llm | tool | passed | |")
+        o.append("|---|---|---:|---:|---:|---:|---:|---|---|")
+        for x in sorted(rr, key=lambda y: _natkey(y.get("task_id"))):
             i = x.get("llm_input_tokens", 0) or 0
             ou = x.get("llm_output_tokens", 0) or 0
-            o.append("| %s | %d | %d | %d | %s | %s |" % (
-                x.get("task_id"), i, ou, i + ou, x.get("llm_count"), x.get("evaluation_result")))
+            o.append("| %s | %s | %d | %d | %d | %s | %s | %s | %s |" % (
+                x.get("task_id"), x.get("model") or "—", i, ou, i + ou,
+                x.get("llm_count"), x.get("tool_count"), x.get("evaluation_result"),
+                "⚠ tokens lost" if _lost(x) else ""))
+        nlost = sum(1 for x in rr if _lost(x))
+        if nlost:
+            o.append("")
+            o.append(f"> ⚠ **{nlost} of {len(rr)} rows lost token attribution** — their `in`/`out` "
+                     "show only the `max_tokens=1` probe's own usage, not the real call. The tasks "
+                     "themselves ran and were evaluated normally, so `tool`/`passed` are correct "
+                     "and this run's **pass rate is valid while its token totals are not**.")
         o.append("")
     return "\n".join(o)
 

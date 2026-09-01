@@ -26,10 +26,26 @@ so it is not environment-specific.
 
 The **first** run after an agent pod starts records LLM telemetry correctly. Every **subsequent**
 run against the same agent process loses the span for the successful LLM call, so downstream token
-accounting reports **0 input / 0 output tokens** even though the task ran and passed.
+accounting under-reports that task's usage even though the task ran and passed.
 
 The task itself is unaffected — tool calls happen, evaluation passes, latencies are recorded. Only
 the telemetry is lost, which makes this easy to miss.
+
+**It is even easier to miss than "tokens are 0", because what the damaged row reports depends on the
+model.** What survives is Bug 2's probe span, and the probe's own usage differs by model class:
+
+| model | probe outcome | damaged row reports |
+|---|---|---|
+| `gpt-5-mini` (reasoning) | rejected, `BadRequestError`, no usage | `in=0, out=0` |
+| `claude-sonnet-5` | **succeeds** | `in=8, out=1` |
+| `gemini-2.5-pro` | **succeeds** | `in=1, out=0` |
+
+So the two bugs interact: **Bug 2 masks Bug 1 on non-reasoning models.** A consumer checking
+`tokens == 0` catches only the reasoning-model case. We shipped exactly that check and it reported
+our data as clean while 15 rows were in fact damaged — a reviewer spotted "8 tokens in, 1 out" on a
+task that had made 11 tool calls. The model-independent signal is structural: **`llm_count <= 1`
+together with `tool_count >= 2` is impossible**, because every tool call needs a preceding model
+turn.
 
 ### Reproduction (100% reliable)
 
@@ -111,9 +127,25 @@ emitted**, consistent with `_emit_llm_span` raising before it writes.
 
 ### Our workaround
 
-We now deploy a fresh agent before **every** run. That removes the loss completely (a 10-task run
-went from 1 affected task to 0/10, and across two full 12-run matrices from 47 affected rows to 0 of
-135 and 0 of 137). It costs ~40–60s per run, so it is viable for us but is clearly a workaround.
+We now deploy a fresh agent before **every** run. Where applied it removes the loss completely: a
+10-task run went from 1 affected task to 0/10, and the gsm8k legs of two full 12-run matrices went
+from 47 affected rows to 0. It costs ~40–60s per run, so it is viable for us but is clearly a
+workaround.
+
+The residual confirms the mechanism rather than contradicting it. Three legs of those matrices still
+reused a warm agent, and they are **exactly** the legs with damaged rows: 10 of 20 tau2 tasks and 3
+of 15 appworld tasks on OpenShift, 2 of 18 appworld tasks on KinD — 15 of 272 rows overall. Every
+leg that deployed fresh is clean, on both clusters.
+
+Two further observations that may help localise the fault:
+
+- **The loss is partial and ordered.** On the 20-task tau2 run, tasks 0–9 lost their spans and tasks
+  10–19 recorded correctly, in a run whose first 10 task ids duplicated those of the immediately
+  preceding 10-task run on the same pod. It is not "all tasks after the first run fail" — something
+  recovers partway through.
+- **The corruption is visible without any telemetry backend**, via the arithmetic: that 20-task run
+  reported *fewer* total input tokens (692,864) than the 10-task run before it (936,094). Twice the
+  tasks, two thirds the tokens.
 
 ---
 
