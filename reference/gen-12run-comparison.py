@@ -6,6 +6,7 @@ Usage: gen-12run-comparison.py <A.json> <A-label> <B.json> <B-label> <version> [
 Every number is derived from the mirrored report.ndjson files, nothing transcribed.
 """
 import json
+import os
 import pathlib
 import sys
 from datetime import datetime, timezone
@@ -48,6 +49,11 @@ def load(path):
             p = pathlib.Path(md) / "report.ndjson"
             if p.exists():
                 rows = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+        man = None
+        if md:
+            mp = pathlib.Path(md) / "manifest.json"
+            if mp.exists():
+                man = json.loads(mp.read_text())
         s = r.get("summary") or {}
         iv = [x.get("llm_input_tokens", 0) or 0 for x in rows]
         ov = [x.get("llm_output_tokens", 0) or 0 for x in rows]
@@ -58,8 +64,58 @@ def load(path):
             i=sum(iv), o=sum(ov), imed=imed, imean=imean, icv=icv,
             omed=omed, omean=omean, ocv=ocv,
             par=(r.get("run_request") or {}).get("max_parallel_sessions"),
+            keys=([a["key"] for a in man.get("artifacts", [])]
+                  + [man["prefix"].rstrip("/") + "/manifest.json"]) if man else [],
+            urlroot=next((a["url"][: -len(a["key"])] for a in (man or {}).get("artifacts", [])
+                          if a.get("url", "").endswith(a["key"])), ""),
             z=sum(1 for x in rows if (x.get("llm_count") or 0) > 0 and not x.get("llm_input_tokens")))
     return out, d.get("base")
+
+
+
+def dir_prefix(keys):
+    """LCP truncated at a '/' boundary — a usable S3 prefix, not a mid-token fragment."""
+    if not keys:
+        return ""
+    cp = os.path.commonprefix(keys)
+    return cp[:cp.rfind("/") + 1] if "/" in cp else cp
+
+
+def s3_section(sets):
+    """sets: [(label, mapping)] -> the 'where the artifacts live' block."""
+    o = ["## S3 artifact locations", "",
+         "Every number below is derived from artifacts published to S3. Both sides share one bucket "
+         "and differ only in the key prefix (the instance's configured `s3.prefix` and encoded "
+         "issuer host).", ""]
+    roots = sorted({v["urlroot"] for _, m in sets for v in m.values() if v["urlroot"]})
+    o += [("| **URL root** | `%s` |" % roots[0]) if len(roots) == 1 else
+          ("| **URL roots** | %s |" % ", ".join("`%s`" % r for r in roots))]
+    o.insert(-1, "| | |")
+    o.insert(-1, "|---|---|")
+    for lab, m in sets:
+        keys = [k for v in m.values() for k in v["keys"]]
+        o.append(f"| **{lab} key prefix** ({len(keys)} objects) | `{dir_prefix(keys)}` |")
+    o += ["",
+          "Key layout is `<s3.prefix>/<caller>/<iss-host-encoded>/<benchmark>/<run_id>/<artifact>`, "
+          "so **benchmark selects cleanly by prefix** but **the model in use does not appear in the "
+          "key at all** — gsm8k mixes models across its runs, so no prefix separates them. Resolve "
+          "model -> `run_id` from the pass-rate table below when you need per-model objects.", "",
+          "| benchmark | " + " | ".join(f"objects {lab}" for lab, _ in sets) + " | sub-prefix |",
+          "|---|" + "---:|" * len(sets) + "---|"]
+    benches = sorted({v["bench"] for _, m in sets for v in m.values()})
+    for b in benches:
+        cells, sub = [], ""
+        for lab, m in sets:
+            ks = [k for v in m.values() if v["bench"] == b for k in v["keys"]]
+            cells.append(str(len(ks)))
+            root = dir_prefix([k for v in m.values() for k in v["keys"]])
+            sub = dir_prefix(ks)[len(root):] or sub
+        o.append(f"| {b} | " + " | ".join(cells) + f" | `{sub}` |")
+    o += ["",
+          "Objects are readable **and listable anonymously**, so treat anything written here as "
+          "public: the keys expose the caller and Keycloak issuer host, and `report.ndjson` "
+          "contains task prompts and model outputs."]
+    return "\n".join(o)
 
 
 X, xbase = load(A)
@@ -74,6 +130,7 @@ L = [f"# 12-Run Comparison — {ALAB} vs {BLAB}, both Service {VERSION}", "",
      "`task_id` is the same task on both platforms — differences are attributable to the platform.",
      "",
      "All numbers are derived from the mirrored `report.ndjson` artifacts.", "",
+     s3_section([(ALAB, X), (BLAB, Y)]), "",
      "## Pass rate, wall time, tokens", "",
      f"| # | bench | p | pass {ALAB} | pass {BLAB} | Δ | wall {ALAB} | wall {BLAB} | {BLAB}/{ALAB} | in {ALAB} | in {BLAB} | in Δ |",
      "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]

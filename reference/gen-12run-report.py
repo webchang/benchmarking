@@ -8,6 +8,7 @@ token_report.ndjson / manifest.json, and emits the fixed 7 sections. Everything 
 derived from the artifacts — nothing is transcribed by hand.
 """
 import json
+import os
 import pathlib
 import sys
 from datetime import datetime, timezone
@@ -103,6 +104,64 @@ non-zero count here should be investigated, not assumed benign. `llm=0` means no
 | `total` | Number of task results recorded. |
 | `wall_seconds` | Wall-clock duration of the run. |
 """
+
+
+def _dir_prefix(keys):
+    """Longest common prefix truncated at a '/' boundary, so it is a usable S3 prefix rather
+    than a mid-token fragment (naive LCP yields things like `.../gsm8k/20260` purely because
+    same-day run_ids share leading digits)."""
+    if not keys:
+        return ""
+    cp = os.path.commonprefix(keys)
+    return cp[:cp.rfind("/") + 1] if "/" in cp else cp
+
+
+def sec_s3():
+    """Where the artifacts live. Unnumbered so the fixed 7 sections keep their numbering."""
+    url_root, per_bench, all_keys = "", {}, []
+    for r in runs:
+        man = manifest(r)
+        if not man:
+            continue
+        keys = [a["key"] for a in man.get("artifacts", [])]
+        for a in man.get("artifacts", []):
+            if a.get("url", "").endswith(a["key"]):
+                url_root = a["url"][: -len(a["key"])]
+        keys.append(man["prefix"].rstrip("/") + "/manifest.json")  # manifest does not list itself
+        all_keys += keys
+        per_bench.setdefault(r["bench"], []).extend(keys)
+    if not all_keys:
+        return "## S3 artifact locations\n\n_No exported artifacts._"
+    root = _dir_prefix(all_keys)
+    o = ["## S3 artifact locations", "",
+         "Every number in this report is derived from artifacts published to S3. All objects for "
+         "this report share one URL root and one key prefix:", "",
+         "| | |", "|---|---|",
+         f"| **URL root** | `{url_root}` |",
+         f"| **Key prefix (all {len(all_keys)} objects)** | `{root}` |", "",
+         "The key layout is `<s3.prefix>/<caller>/<iss-host-encoded>/<benchmark>/<run_id>/<artifact>`, "
+         f"so **benchmark is a path segment** and selects cleanly ({len(all_keys)} objects = "
+         f"{len(runs)} runs x 6 artifacts):", "",
+         "| benchmark | runs | objects | prefix (append to the key prefix above) |",
+         "|---|---:|---:|---|"]
+    for b in sorted(per_bench):
+        ks = per_bench[b]
+        nruns = sum(1 for r in runs if r["bench"] == b and manifest(r))
+        sub = _dir_prefix(ks)[len(root):]
+        o.append(f"| {b} | {nruns} | {len(ks)} | `{sub}` |")
+    models = sorted({m for r in runs for m in
+                     {x.get("model") for x in rows(r, "report.ndjson") if x.get("model")}})
+    o += ["",
+          "**The model in use is NOT part of the key**, so it cannot be selected by prefix. Three of "
+          "the models here happen to be prefix-separable only because tau2 and appworld each used a "
+          "single model; gsm8k mixes models across its runs, so its prefix necessarily returns all of "
+          f"them. Models present: {', '.join('`%s`' % m for m in models)}. To fetch the objects for one "
+          "model, resolve model -> `run_id` from the summary in section 4 and use the per-run prefixes.",
+          "",
+          "Objects are readable **and listable anonymously** (no credentials needed), so treat "
+          "anything written here as public: the keys expose the caller and the Keycloak issuer host, "
+          "and `report.ndjson` contains task prompts and model outputs."]
+    return "\n".join(o)
 
 
 def sec3():
@@ -227,7 +286,8 @@ head = [f"# Benchmarking Service — 12 Parameterized Runs ({PLATFORM})", "",
         "All numbers below are derived programmatically from the mirrored S3 artifacts "
         "(`report.ndjson` / `token_report.ndjson` / `manifest.json`) — none are transcribed.", ""]
 
-doc = "\n".join(head) + "\n" + "\n\n".join([S1, S2, sec3(), sec4(), sec5(), sec6(), sec7()]) + "\n"
+doc = "\n".join(head) + "\n" + "\n\n".join(
+    [sec_s3(), S1, S2, sec3(), sec4(), sec5(), sec6(), sec7()]) + "\n"
 if OUT:
     OUT.write_text(doc)
     print(f"wrote {OUT} ({len(doc)} bytes, {len(runs)} runs)")
