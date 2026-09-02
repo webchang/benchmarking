@@ -1,5 +1,10 @@
 # Benchmarking Service — Developer Guide
 
+**Last modified:** 2026-09-02T21:57:21Z
+
+> Hand-maintained, unlike the generated `results/12run-*.md` files which stamp themselves. Bump the
+> line above when you edit this guide.
+
 A task-oriented guide to driving the Benchmarking Service over its RESTful API. Every
 `curl` below is derived from the flows we exercised end-to-end (gsm8k single-turn, tau2
 multi-turn) on the `ykt3` and `kind-rossoctl` clusters.
@@ -229,6 +234,17 @@ curl -s -o /dev/null -w '%{http_code}\n' -X PUT "$SVC/config" \
 
 The happy path is: **deploy → wait for Ready → run → poll → report → download from S3**.
 
+Every block below is copy-pasteable once these four variables are exported (see §2 for how to get
+the token; §6.1 wraps this whole section in a single command if you would rather not paste):
+
+```bash
+export SVC="https://benchmarking-rossoctl-system.apps.ykt3.hcp.res.ibm.com"   # Service base URL
+export BENCH=gsm8k          # gsm8k | tau2 | appworld
+export SCOPE="namespace=team1&agent=tool_calling&experiment=default"
+export TOKEN="…"            # from §2; never echo this
+# Self-signed OpenShift route? add -k to every curl, or: export CURL_OPTS=-k
+```
+
 ### 5.0 Discover what's available
 
 ```bash
@@ -351,11 +367,24 @@ curl -s "$SVC/benchmarks/gsm8k/runs" -H "Authorization: Bearer $TOKEN" | python3
 `{total, succeeded, evaluated_pass, pass_rate, wall_seconds}`. A simple poll loop:
 
 ```bash
+# Terminal statuses are succeeded | failed | error | cancelled — a loop that waits only for
+# succeeded/failed spins forever on the other two.
 while :; do
-  S=$(curl -s "$SVC/benchmarks/gsm8k/runs/$RUN" -H "Authorization: Bearer $TOKEN" \
-      | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["status"])')
-  echo "status=$S"; [ "$S" = succeeded ] || [ "$S" = failed ] && break; sleep 15
+  S=$(curl -s $CURL_OPTS "$SVC/benchmarks/$BENCH/runs/$RUN" -H "Authorization: Bearer $TOKEN" \
+      | python3 -c 'import sys,json; print(json.load(sys.stdin)["status"])')
+  echo "status=$S"
+  case "$S" in succeeded|failed|error|cancelled) break ;; esac
+  sleep 10
 done
+
+# The one-line verdict.
+curl -s $CURL_OPTS "$SVC/benchmarks/$BENCH/runs/$RUN" -H "Authorization: Bearer $TOKEN" > /tmp/run.json
+python3 - <<'EOF'
+import json
+d = json.load(open("/tmp/run.json")); s = d["summary"]
+print("%s  pass_rate=%s  %s/%s  wall=%.0fs" % (
+    d["status"], s["pass_rate"], s["evaluated_pass"], s["total"], s["wall_seconds"]))
+EOF
 ```
 
 ### 5.5 Get results (report)
@@ -399,17 +428,50 @@ make one model call, or did we lose a span?" is answerable from the artifacts al
 a fixed whitelist (`mlflow_report.SPAN_ROW_KEYS`) — span attributes can carry prompts, and these
 objects are public-read, so nothing outside that list is published.
 
-Grab the keys/URLs straight from the run state, then download:
+#### The S3 URL is fully determined — you can construct it
+
+Objects are addressed as **`<url-root>/<key>`**, and the key is the layout above. For the bucket
+these runs use:
+
+| | |
+|---|---|
+| URL root | `https://rossoctl-benchmarking.s3.us-east-1.amazonaws.com/` |
+| Key | `<s3.prefix>/<preferred_username>/<encoded-iss-host>/<benchmark>/<run_id>/<artifact>` |
+
+So a real, working URL — anonymously readable, no credentials, no AWS CLI:
+
+```
+https://rossoctl-benchmarking.s3.us-east-1.amazonaws.com/ykt3-to-ykt2/benchmarker/keycloak-keycloak.apps.ykt2.hcp.res.ibm.com-realms-rossoctl/gsm8k/20260902215628-79e0713a/report.ndjson
+```
+
+`s3.prefix` is per instance (`ykt3-to-ykt2/` on the OpenShift instance, `kind/` on KinD), and the
+issuer host is scheme-stripped with `.`/`:`/`/` replaced by `-`. **The bucket is public and
+anonymously listable**, so treat everything exported as published.
 
 ```bash
-# Artifact keys + URLs for the run.
-curl -s "$SVC/benchmarks/gsm8k/runs/$RUN" -H "Authorization: Bearer $TOKEN" \
-  | python3 -c 'import sys,json; [print(a["format"], a["key"], a["url"]) for a in json.load(sys.stdin)["artifacts"]]'
+# The authoritative list — name, format, size and the full URL, straight from the run state.
+curl -s $CURL_OPTS "$SVC/benchmarks/$BENCH/runs/$RUN" -H "Authorization: Bearer $TOKEN" > /tmp/run.json
+python3 - <<'EOF'
+import json
+for a in json.load(open("/tmp/run.json"))["artifacts"]:
+    print("%-8s %9d  %s" % (a["format"], a["size_bytes"], a["url"]))
+EOF
 
-# Download the whole run prefix (private bucket → use AWS creds; public_read → plain curl the url).
-PREFIX=$(curl -s "$SVC/benchmarks/gsm8k/runs/$RUN" -H "Authorization: Bearer $TOKEN" \
+# Download every artifact by URL — plain curl, no AWS credentials needed.
+PREFIX=$(curl -s $CURL_OPTS "$SVC/benchmarks/$BENCH/runs/$RUN" -H "Authorization: Bearer $TOKEN" \
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["artifacts_prefix"])')
-aws s3 cp "s3://rossoctl-benchmarking/$PREFIX/" ./results/ --recursive
+mkdir -p "/tmp/benchmarking/$PREFIX" && cd "/tmp/benchmarking/$PREFIX"
+for f in run.json report.ndjson report.parquet token_report.ndjson token_report.parquet \
+         span_report.ndjson span_report.parquet manifest.json; do
+  curl -sS -O "https://rossoctl-benchmarking.s3.us-east-1.amazonaws.com/$PREFIX/$f"
+done && ls -la
+
+# Or discover the set from the manifest, which indexes every object but itself.
+curl -s "https://rossoctl-benchmarking.s3.us-east-1.amazonaws.com/$PREFIX/manifest.json" \
+  | python3 -m json.tool
+
+# Private bucket instead of public_read? Then use the AWS CLI with credentials.
+aws s3 cp "s3://rossoctl-benchmarking/$PREFIX/" ./ --recursive
 ```
 
 ### 5.7 Tear down
@@ -426,6 +488,185 @@ experiments).
 ---
 
 ## 6. End-to-end examples (validated flows)
+
+### 6.0 Run #1 start to finish, on the ykt3 Service driving ykt2 workloads
+
+Run #1 of the canonical matrix: gsm8k, 1 task, no gateway, no plugins. Every command below was
+executed exactly as written; the `run_id` and numbers are from that run. Paste the block, then the
+steps.
+
+```bash
+# ---- 0. environment (the cross-cluster instance: Service on ykt3, workloads on ykt2/team1) ----
+export SVC="https://benchmarking-rossoctl-system.apps.ykt3.hcp.res.ibm.com"
+export KC="https://keycloak-keycloak.apps.ykt2.hcp.res.ibm.com"   # the instance's iss origin
+export REALM=rossoctl KC_CLIENT=rossoctl KC_USER=benchmarker
+export BENCH=gsm8k
+export SCOPE="namespace=team1&agent=tool_calling&experiment=default"
+export CURL_OPTS=-k          # ykt3's route serves a self-signed cert
+read -rs -p "benchmarker password: " KC_PASS; echo      # never put this in a file you commit
+
+# ---- 1. caller token ----
+export TOKEN=$(curl -s $CURL_OPTS "$KC/realms/$REALM/protocol/openid-connect/token" \
+  -d grant_type=password -d client_id="$KC_CLIENT" \
+  -d username="$KC_USER" -d password="$KC_PASS" \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
+unset KC_PASS
+curl -s $CURL_OPTS "$SVC/hello" -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+#   -> {"iss": ".../realms/rossoctl", "preferred_username": "benchmarker", ...}
+
+# ---- 2. deploy the MCP tool + A2A agent (idempotent: delete first) ----
+curl -s $CURL_OPTS -X DELETE "$SVC/benchmarks/$BENCH/deploy?$SCOPE" \
+  -H "Authorization: Bearer $TOKEN" -o /dev/null -w 'delete -> %{http_code}\n'   # 204 or 404
+sleep 10
+curl -s $CURL_OPTS -X POST "$SVC/benchmarks/$BENCH/deploy" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"agent":"tool_calling","namespace":"team1","experiment":"default"}' \
+  -o /dev/null -w 'deploy -> %{http_code}\n'                                     # 201
+
+# ---- 3. wait until BOTH are Ready, four polls in a row ----
+# One Ready reading is not enough: an agent whose MCP is not serving yet exits and
+# CrashLoopBackOffs, so readiness flaps. A run accepted mid-flap records 0 tasks.
+STABLE=0; until [ "$STABLE" -ge 4 ]; do
+  R=$(curl -s $CURL_OPTS "$SVC/benchmarks/$BENCH/status?$SCOPE" -H "Authorization: Bearer $TOKEN" \
+      | python3 -c 'import sys,json; d=json.load(sys.stdin); print(int(bool(d["tool_ready"] and d["agent_ready"])))')
+  [ "$R" = 1 ] && STABLE=$((STABLE+1)) || STABLE=0
+  echo "ready=$R stable=$STABLE"; sleep 10
+done
+# On OpenShift the Route 502s for ~10s AFTER the Service reports Ready, so gate on the card too:
+AGENT=$(curl -s $CURL_OPTS "$SVC/benchmarks/$BENCH/status?$SCOPE" -H "Authorization: Bearer $TOKEN" \
+        | python3 -c 'import sys,json; print(json.load(sys.stdin)["agent_name"])')
+until curl -sf -o /dev/null "https://$AGENT-team1.apps.ykt2.hcp.res.ibm.com/.well-known/agent-card.json"; do
+  echo "waiting for the agent card"; sleep 5
+done; sleep 15
+
+# ---- 4. submit the run ----
+export RUN=$(curl -s $CURL_OPTS -X POST "$SVC/benchmarks/$BENCH/runs" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"agent":"tool_calling","namespace":"team1","experiment":"default",
+       "max_tasks":1,"max_parallel_sessions":1,"timeout_seconds":120}' \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["run_id"])')
+echo "run_id=$RUN"                                    # e.g. 20260902215628-79e0713a
+
+# ---- 5. poll to a terminal status, then print the verdict ----
+while :; do
+  S=$(curl -s $CURL_OPTS "$SVC/benchmarks/$BENCH/runs/$RUN" -H "Authorization: Bearer $TOKEN" \
+      | python3 -c 'import sys,json; print(json.load(sys.stdin)["status"])')
+  echo "status=$S"; case "$S" in succeeded|failed|error|cancelled) break ;; esac; sleep 10
+done
+#   -> succeeded, summary {"total":1,"succeeded":1,"evaluated_pass":1,"pass_rate":1.0,"wall_seconds":5.4}
+#      Note ~100 spans for ONE gsm8k task: ~91 are A2A/HTTP framework internals.
+
+# ---- 6. artifacts: list the S3 URLs, then mirror them locally ----
+export PREFIX=$(curl -s $CURL_OPTS "$SVC/benchmarks/$BENCH/runs/$RUN" -H "Authorization: Bearer $TOKEN" \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["artifacts_prefix"])')
+echo "$PREFIX"
+#   -> ykt3-to-ykt2/benchmarker/keycloak-keycloak.apps.ykt2.hcp.res.ibm.com-realms-rossoctl/gsm8k/20260902215628-79e0713a
+mkdir -p "/tmp/benchmarking/$PREFIX" && (cd "/tmp/benchmarking/$PREFIX" && \
+  for f in run.json report.ndjson report.parquet token_report.ndjson token_report.parquet \
+           span_report.ndjson span_report.parquet manifest.json; do
+    curl -sS -O "https://rossoctl-benchmarking.s3.us-east-1.amazonaws.com/$PREFIX/$f"; done && ls -la)
+
+# ---- 7. analyse: per-task tokens, and whether the telemetry is trustworthy ----
+cd "/tmp/benchmarking/$PREFIX"
+python3 - <<'EOF'
+import json
+rows = [json.loads(l) for l in open("report.ndjson") if l.strip()]
+print("%-6s %-38s %7s %7s %5s %6s  %s" % ("task", "model", "in", "out", "llm", "tool", "passed"))
+for r in sorted(rows, key=lambda x: str(x["task_id"])):
+    print("%-6s %-38s %7d %7d %5s %6s  %s" % (
+        r["task_id"], r["model"], r["llm_input_tokens"], r["llm_output_tokens"],
+        r["llm_count"], r["tool_count"], r["evaluation_result"]))
+# llm<=1 alongside tool>=2 is impossible -- every tool call needs a preceding model turn -- so it
+# means the usage-bearing span was lost and the token counts understate the real cost.
+bad = [r for r in rows if (r["llm_count"] or 0) <= 1 and (r["tool_count"] or 0) >= 2]
+print("lost token attribution:", len(bad), "of", len(rows))
+EOF
+#   -> 0      openai/Azure/gpt-5-mini-2025-08-07         320     471     2      1  True
+#      lost token attribution: 0 of 1
+
+# Which spans did the task actually invoke? A healthy task shows TWO chat spans -- the
+# max_tokens=1 capability probe plus the real call. One means the real call's span was lost.
+python3 - <<'EOF'
+import collections, json
+rows = [json.loads(l) for l in open("span_report.ndjson") if l.strip()]
+print("spans:", len(rows))
+for kind, n in collections.Counter(r["kind"] for r in rows).most_common():
+    print("  %4d  %s" % (n, kind))
+for r in rows:
+    if r["kind"] == "chat":
+        print("  chat  max_tokens=%s  in=%s  out=%s" % (
+            r["request_max_tokens"], r["input_tokens"], r["output_tokens"]))
+EOF
+#   -> spans: 100  (other 91, phase 3, chat 2, tool 2, root 1, agent 1)
+#      chat  max_tokens=1  in=None  out=None     <- the probe (rejected by a reasoning model)
+#      chat  max_tokens=None  in=320  out=471    <- the real call
+
+# ---- 8. tear down ----
+curl -s $CURL_OPTS -X DELETE "$SVC/benchmarks/$BENCH/deploy?$SCOPE" \
+  -H "Authorization: Bearer $TOKEN" -o /dev/null -w 'teardown -> %{http_code}\n'   # 204
+```
+
+### 6.1 The same thing in one command (`reference/bench.py`)
+
+`reference/bench.py` is a stdlib-only client that performs §6.0 end to end — token, pre-clean,
+deploy, the readiness-stability and agent-card gates, run, 424 retry, poll, artifact listing and
+local mirror — and exits non-zero if the run did not succeed.
+
+```bash
+export BM_BASE="https://benchmarking-rossoctl-system.apps.ykt3.hcp.res.ibm.com"
+export BM_ISS="https://keycloak-keycloak.apps.ykt2.hcp.res.ibm.com/realms/rossoctl"
+export BM_PASSWORD_FILE="$HOME/.rossoctl-ykt3/benchmarker.pass"     # chmod 600
+export BM_INSECURE=1
+export BM_CARD_TEMPLATE="https://{service}-{namespace}.apps.ykt2.hcp.res.ibm.com/.well-known/agent-card.json"
+
+reference/bench.py all --benchmark gsm8k --tasks 1 --timeout 120 --mirror /tmp/benchmarking
+```
+
+Which prints, for the run above:
+
+```
+[17:56:12]   agent card 200 (https://exgentic-a2a-tool-calling-gsm8k-team1.apps.ykt2...)
+[17:56:28] run_id=20260902215628-79e0713a
+[17:56:38] terminal=succeeded summary={"total": 1, ..., "pass_rate": 1.0, "wall_seconds": 5.4}
+[17:56:38] artifacts_prefix=ykt3-to-ykt2/benchmarker/keycloak-...-rossoctl/gsm8k/20260902215628-79e0713a
+  json           468  https://rossoctl-benchmarking.s3.us-east-1.amazonaws.com/.../run.json
+  ...
+[17:56:39] mirrored 8/8 -> /tmp/benchmarking/ykt3-to-ykt2/.../20260902215628-79e0713a
+  status      succeeded
+  pass_rate   1.0   (1/1)
+  wall        5s
+```
+
+Each step is also a subcommand, so the CLI doubles as a way to see one HTTP call at a time:
+
+```bash
+reference/bench.py whoami                                  # GET /hello
+reference/bench.py list                                    # GET /benchmarks
+reference/bench.py deploy    --benchmark gsm8k
+reference/bench.py wait      --benchmark gsm8k             # stability + card gates
+reference/bench.py run       --benchmark gsm8k --tasks 1    # prints the run_id
+reference/bench.py poll      --benchmark gsm8k --run "$RUN"
+reference/bench.py report    --benchmark gsm8k --run "$RUN" # GET …/report (needs MLflow)
+reference/bench.py artifacts --benchmark gsm8k --run "$RUN" --mirror /tmp/benchmarking
+reference/bench.py teardown  --benchmark gsm8k
+```
+
+Useful options: `--parallel` (`max_parallel_sessions`), `--task-timeout`, `--model` for a
+deploy-time swap, `--preset auth-only|ibac-only|full` and repeatable `--plugin ibac:observe` for
+AuthBridge, `--no-deploy` to reuse a deployment, `--teardown` to clean up afterwards. Switching to
+KinD needs only three lines:
+
+```bash
+export BM_BASE="http://benchmarking.localtest.me:8080"
+export BM_ISS="http://keycloak.localtest.me:8080/realms/rossoctl"
+export BM_PASSWORD_FILE="$HOME/.rossoctl-kind/benchmarker.pass"; unset BM_INSECURE BM_CARD_TEMPLATE
+```
+
+> For the full 12-run matrix use `reference/run-12.py` instead (it drives `run12_specs.json` and
+> writes the state file the `gen-12run-*.py` report generators consume). It implements the same
+> gates independently; consolidating both behind `bench.py` is a known follow-up.
+
+### 6.2 Other validated flows
 
 These map to the canonical parameterized runs and were validated on `ykt3` with S3 export.
 
