@@ -589,28 +589,33 @@ title_band(s, "What the Service Can & Cannot Enact", "The HTTP-only boundary, ma
 
 box(s, inch(0.5), inch(1.35), inch(5.9), inch(0.5), "✓  Enacts over HTTP", CLIENT, CLIENT,
     font=15, font_color=WHITE, shape=MSO_SHAPE.RECTANGLE)
+# Every line here is sized to fit on ONE line at its font size. A wrapped bullet returns to the
+# column margin rather than hanging under its text, which reads as a broken line, so long items are
+# split explicitly into a bullet + an indented continuation instead of being left to wrap.
 textbox(s, inch(0.6), inch(2.0), inch(5.8), inch(4.6),
-        [("• Deploy MCP tool + A2A agent (with CPU/mem, image, env)", 13, False, INK, 1),
+        [("• Deploy MCP tool + A2A agent (CPU/mem, image, env)", 13, False, INK, 1),
          ("• Deploy-time model swap (per-experiment agent)", 13, False, INK, 1),
          ("• authbridge_enabled → inject the sidecar (layer-2)", 13, False, INK, 1),
-         ("• plugin_preset / plugins / on_error → AuthBridge layer-3 composition,", 13, False, INK, 1),
-         ("     forwarded as pluginPreset/plugins/onError; the operator renders the ConfigMap", 12, False, RGBColor(0x3A, 0x46, 0x54), 2),
+         ("• plugin_preset / plugins / on_error → AuthBridge layer-3", 13, False, INK, 1),
+         ("→ pluginPreset/plugins/onError; operator renders ConfigMap", 11.5, False, RGBColor(0x3A, 0x46, 0x54), 2),
          ("• Run benchmark sessions; collect pass/fail + latency", 13, False, INK, 1),
          ("• Emit + read MLflow traces; export to S3", 13, False, INK, 1),
-         ("• Service-owned config: MLflow + S3 via PUT /config (benchmarker only)", 13, False, INK, 1)])
+         ("• Service-owned config: MLflow + S3 via PUT /config", 13, False, INK, 1),
+         ("benchmarker only", 11.5, False, RGBColor(0x3A, 0x46, 0x54), 2)])
 
 box(s, inch(6.9), inch(1.35), inch(5.9), inch(0.5), "✗  Out-of-band (reports, doesn't do)", KC, KC,
     font=15, font_color=WHITE, shape=MSO_SHAPE.RECTANGLE)
 textbox(s, inch(7.0), inch(2.0), inch(5.8), inch(4.6),
-        [("• Cluster Secrets (hf-secret, openai-secret) — operator provisions;", 13, False, INK, 1),
-         ("     run precheck returns 424 naming the missing secret", 12, False, RGBColor(0x3A, 0x46, 0x54), 2),
+        [("• Cluster Secrets (hf-secret, openai-secret)", 13, False, INK, 1),
+         ("operator provisions; run precheck returns 424 naming it", 11.5, False, RGBColor(0x3A, 0x46, 0x54), 2),
          ("• AuthBridge CLUSTER config — ibac judgeEndpoint / judgeModel", 13, False, INK, 1),
-         ("     live in the platform-config ConfigMap, not the agent API", 12, False, RGBColor(0x3A, 0x46, 0x54), 2),
+         ("in the platform-config ConfigMap, not the agent API", 11.5, False, RGBColor(0x3A, 0x46, 0x54), 2),
          ("• Any cluster-level API call — Rossoctl does these server-side", 13, False, INK, 1),
          ("Principle:", 13.5, True, KC),
-         ("• Never silently ignore an un-enactable request — precheck (424) or reject (422) with an actionable reason.", 13, False, INK, 1)])
+         ("• Never silently ignore an un-enactable request —", 13, False, INK, 1),
+         ("precheck (424) or reject (422), with an actionable reason", 11.5, False, RGBColor(0x3A, 0x46, 0x54), 2)])
 
-box(s, inch(1.6), inch(6.5), inch(10.1), inch(0.75),
+box(s, inch(1.6), inch(5.75), inch(10.1), inch(0.75),
     "Cluster-agnostic by construction: works on kind / vanilla k8s / OpenShift; "
     "cross-cluster runs use per-instance route templates + a reachable internal issuer.",
     LTGRAY, STORE, font=12.5, bold=True, font_color=INK)
