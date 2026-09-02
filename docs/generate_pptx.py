@@ -158,7 +158,7 @@ textbox(s, inch(0.9), inch(3.5), inch(11.5), inch(0.8),
         [("Architecture & Design Overview", 22, False, RGBColor(0xC9, 0xD9, 0xEC))])
 textbox(s, inch(0.9), inch(4.7), inch(11.5), inch(1.4),
         [("A pure-Python, HTTP-only service that deploys and evaluates agent benchmarks", 16, False, RGBColor(0xD8, 0xE3, 0xF0)),
-         ("across multiple cluster-specific Rossoctl / Kagenti instances.", 16, False, RGBColor(0xD8, 0xE3, 0xF0))])
+         ("across multiple cluster-specific Rossoctl instances.", 16, False, RGBColor(0xD8, 0xE3, 0xF0))])
 
 # ================================================ SLIDE 2: OVERVIEW + DECISIONS
 s = prs.slides.add_slide(BLANK)
@@ -176,7 +176,9 @@ textbox(s, inch(0.5), inch(1.95), inch(5.85), inch(4.9),
          ("• Asynchronous parallel benchmark runs", 13.5, False, INK, 1),
          ("• Secure, scalable, auditable & resilient", 13.5, False, INK, 1),
          ("3 benchmarks", 14, True, BLUE),
-         ("• gsm8k (single-turn) · tau2 (multi-turn, server-side simulator) · appworld", 13.5, False, INK, 1),
+         ("• gsm8k — single-turn: one prompt in, one answer out, no dialogue partner", 13, False, INK, 1),
+         ("• tau2 — multi-turn: a server-side user simulator LLM plays the customer", 13, False, INK, 1),
+         ("• appworld — long-horizon: many API calls across simulated apps", 13, False, INK, 1),
          ("Client contract", 14, True, BLUE),
          ("• Point at a hostname, send Authorization: Bearer <caller JWT> — same from kind to prod", 13.5, False, INK, 1)])
 
@@ -189,7 +191,7 @@ decisions = [
     ("iss is the trust anchor", "The JWT issuer selects the per-instance config — no separate instance argument, so no confused-deputy escape."),
     ("Per-request ROPC login", "Fresh Service token every request — no expiry handling."),
     ("iss-keyed per-instance config", "One file per issuer: Rossoctl URL, benchmarker cred, MLflow/S3, optional Keycloak backchannel + workload route templates."),
-    ("Enact only what HTTP allows", "Deploy/run/report/export; workload Secrets + AuthBridge layer-3 are out-of-band → prechecked/rejected, never silently ignored."),
+    ("Enact only what the API allows", "Deploy/run/report/export — now including AuthBridge plugin presets (layer-3). Only workload Secrets remain out-of-band: prechecked and reported (424), never silently ignored."),
     ("MLflow with Service; S3 in the cloud", "MLflow is co-located with the Service (per-service traces it emits + reads), not in the workload cluster; S3 is an external cloud service — the shared cross-service sink."),
 ]
 y = inch(1.95)
@@ -269,7 +271,7 @@ box(s, inch(9.35), inch(3.35), inch(3.05), inch(0.8), "A2A agent", WORK, WORK,
 
 # OTEL collector — lives in the workload cluster; forwards the agent's own OTLP spans to MLflow
 # (the agent can't auth to MLflow directly). Optional / off by default (workload_otel).
-box(s, inch(6.7), inch(4.72), inch(2.7), inch(0.70), "OTEL collector", WORK, WORK,
+box(s, inch(6.15), inch(4.72), inch(2.7), inch(0.70), "OTEL collector", WORK, WORK,
     font=12.5, font_color=WHITE, sub="forwards agent spans → MLflow", sub_color=LTTEAL)
 
 # ---- connectors (numbered) ----
@@ -316,10 +318,10 @@ dot(inch(2.15), inch(4.52), 7)
 # 8 is a TWO-HOP path (the agent cannot authenticate to MLflow itself), so both hops are badged
 # 8a / 8b in flow order rather than leaving the first hop unlabelled, and both are dashed because
 # the whole path is optional (workload_otel, off by default).
-connector(s, inch(9.55), inch(4.15), inch(9.20), inch(4.72), color=WORK, dashed=True)
-dot(inch(9.30), inch(4.51), "8a")
-connector(s, inch(6.7), inch(5.07), inch(3.2), inch(5.24), color=STORE, dashed=True)
-dot(inch(4.95), inch(5.16), "8b")
+connector(s, inch(9.55), inch(4.15), inch(8.70), inch(4.72), color=WORK, dashed=True)
+dot(inch(9.05), inch(4.48), "8a")
+connector(s, inch(6.15), inch(5.07), inch(3.2), inch(5.24), color=STORE, dashed=True)
+dot(inch(4.65), inch(5.155), "8b")
 # 9 MLflow -> Service: READ back the Agent.Session traces (after the workload spans have landed)
 connector(s, inch(2.9), inch(4.75), inch(2.9), inch(4.30), color=STORE)
 dot(inch(2.9), inch(4.52), 9)
@@ -337,7 +339,8 @@ legend_l = [
     "5  Rossoctl creates the MCP tool + A2A agent in-cluster",
 ]
 legend_r = [
-    "6  Service runs benchmark sessions directly (MCP / A2A)",
+    "6  Service drives the MCP session + the A2A call itself;",
+      "      the agent only issues execute_tool inside that session",
     "7  Service emits the Agent.Session trace → MLflow (first)",
     "8a A2A agent → OTEL collector   ·   8b collector → MLflow",
       "      (optional workload spans — off by default)",
@@ -352,7 +355,7 @@ for col_x, items in ((inch(0.6), legend_l), (inch(6.7), legend_r)):
     ltf.word_wrap = True
     for i, item in enumerate(items):
         p = ltf.paragraphs[0] if i == 0 else ltf.add_paragraph()
-        p.space_after = Pt(1)
+        p.space_after = Pt(0)  # 7 lines in the right column; Pt(1) pressed line 10 into the border
         r = p.add_run(); r.text = item; _set_font(r, 10.5, False, INK)
 
 # ============================ SLIDE 4: ARCHITECTURE — WORKLOAD SPECIFIC COMPONENTS
@@ -445,8 +448,10 @@ dot(inch(5.25), inch(2.13), 3)
 connector(s, inch(10.45), inch(2.58), inch(10.45), inch(1.80), color=ACCENT)
 dot(inch(10.45), inch(2.13), 4)
 # 5 with a preset, the agent's MCP traffic goes through the sidecar first
+# the badge is offset beside this arrow, not on it: the gap is only 0.32" and a centred badge
+# covered the arrowhead, leaving the direction of travel unreadable.
 connector(s, inch(5.25), inch(3.38), inch(5.25), inch(3.70), color=ROSSO)
-dot(inch(5.25), inch(3.54), 5)
+dot(inch(5.62), inch(3.54), 5)
 # 6 sidecar -> MCP server, once the action is authorized. The inter-pod corridor is 0.65" wide so
 # this badge sits ON the line without touching either pod border.
 connector(s, inch(7.43), inch(4.10), inch(8.32), inch(4.10), color=ROSSO)
@@ -473,7 +478,7 @@ ROWS = [
     ("gsm8k", "exgentic-mcp-gsm8k", "1  (agent)", "~1"),
     ("tau2", "exgentic-mcp-tau2", "2  (+ user simulator)", "~11"),
     ("appworld", "exgentic-mcp-appworld", "1  (agent)", "~13"),
-    ("+ any preset", "unchanged", "+1 judge per action", "—"),
+    ("+ any preset", "unchanged", "+1 IBAC judge call per action", "—"),
 ]
 for ri, row in enumerate(ROWS):
     y = inch(5.80) + ri * inch(0.27)
@@ -587,7 +592,9 @@ box(s, inch(0.5), inch(1.35), inch(5.9), inch(0.5), "✓  Enacts over HTTP", CLI
 textbox(s, inch(0.6), inch(2.0), inch(5.8), inch(4.6),
         [("• Deploy MCP tool + A2A agent (with CPU/mem, image, env)", 13, False, INK, 1),
          ("• Deploy-time model swap (per-experiment agent)", 13, False, INK, 1),
-         ("• authbridge_enabled → inject sidecar w/ cluster-default pipeline (layer-2)", 13, False, INK, 1),
+         ("• authbridge_enabled → inject the sidecar (layer-2)", 13, False, INK, 1),
+         ("• plugin_preset / plugins / on_error → AuthBridge layer-3 composition,", 13, False, INK, 1),
+         ("     forwarded as pluginPreset/plugins/onError; the operator renders the ConfigMap", 12, False, RGBColor(0x3A, 0x46, 0x54), 2),
          ("• Run benchmark sessions; collect pass/fail + latency", 13, False, INK, 1),
          ("• Emit + read MLflow traces; export to S3", 13, False, INK, 1),
          ("• Service-owned config: MLflow + S3 via PUT /config (benchmarker only)", 13, False, INK, 1)])
@@ -597,8 +604,8 @@ box(s, inch(6.9), inch(1.35), inch(5.9), inch(0.5), "✗  Out-of-band (reports, 
 textbox(s, inch(7.0), inch(2.0), inch(5.8), inch(4.6),
         [("• Cluster Secrets (hf-secret, openai-secret) — operator provisions;", 13, False, INK, 1),
          ("     run precheck returns 424 naming the missing secret", 12, False, RGBColor(0x3A, 0x46, 0x54), 2),
-         ("• AuthBridge layer-3 plugin composition / on_error —", 13, False, INK, 1),
-         ("     needs a per-agent ConfigMap kubectl overlay; deploy returns 422", 12, False, RGBColor(0x3A, 0x46, 0x54), 2),
+         ("• AuthBridge CLUSTER config — ibac judgeEndpoint / judgeModel", 13, False, INK, 1),
+         ("     live in the platform-config ConfigMap, not the agent API", 12, False, RGBColor(0x3A, 0x46, 0x54), 2),
          ("• Any cluster-level API call — Rossoctl does these server-side", 13, False, INK, 1),
          ("Principle:", 13.5, True, KC),
          ("• Never silently ignore an un-enactable request — precheck (424) or reject (422) with an actionable reason.", 13, False, INK, 1)])
