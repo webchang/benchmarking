@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the comparative AuthBridge-plugin overhead analysis from a 12-run's mirrored artifacts.
 
-Usage: gen-plugin-overhead.py <run12-LABEL.json> <version> <platform-note> [out.md]
+Usage: gen-plugin-overhead.py <run12-LABEL.json> <version> <platform-note> [out.md] [judge-ts-file]
 
 Compares the no-plugin baseline leg against each `--plugin-preset` leg. Every number is derived
 from the mirrored `report.ndjson` / `span_report.ndjson`; nothing is transcribed.
@@ -10,23 +10,46 @@ The comparison is only meaningful because task selection is deterministic, so th
 the SAME tasks as the leading tasks of the baseline leg. The script restricts every leg to the
 intersection of their task ids and asserts the workload really was identical (same input tokens,
 same LLM/tool counts) before reporting a single latency figure.
+
+`judge-ts-file` is optional but strongly recommended: one ISO-8601 timestamp per line, being the
+IBAC judge proxy's request log. Without it the script cannot tell how many tool calls were actually
+authorized, and a per-call median from a leg that judged only some of its calls is a MIXTURE of two
+populations -- which is exactly how an incomplete reading once made a superset preset look cheaper
+than its own subset. Collect it with:
+
+    oc -n rossoctl-system logs deploy/ibac-judge --since=6h --timestamps \
+      | grep -vi healthz | awk '{print $1}' > /tmp/judge.ts
 """
+import datetime as dt
 import json
 import pathlib
 import statistics as st
 import sys
-from datetime import datetime, timezone
+from datetime import timezone
 
 SRC = pathlib.Path(sys.argv[1])
 VERSION = sys.argv[2]
 PLATFORM = sys.argv[3]
 OUT = pathlib.Path(sys.argv[4]) if len(sys.argv) > 4 else None
+JUDGE_TS = pathlib.Path(sys.argv[5]) if len(sys.argv) > 5 else None
 
 BASELINE = 3               # gsm8k, no gateway, no plugins
 PRESETS = [5, 6, 7, 8]     # the --plugin-preset legs
+TOOL_SPAN = "execute_tool submit"   # the one substantive gsm8k tool call
 
 data = json.loads(SRC.read_text())
 runs = {r["n"]: r for r in data["runs"]}
+
+judge_ts = []
+if JUDGE_TS and JUDGE_TS.exists():
+    for line in JUDGE_TS.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            judge_ts.append(dt.datetime.fromisoformat(line.replace("Z", "+00:00")))
+        except ValueError:
+            pass
 
 
 def rows(n, name="report.ndjson"):
@@ -50,57 +73,86 @@ def label(n):
     return " ".join(parts)
 
 
-def med(vals):
-    return st.median(vals) if vals else None
+def med(v):
+    return st.median(v) if v else None
 
 
 def f(v, spec="%.2f"):
     return "—" if v is None else spec % v
 
 
-LEGS = [BASELINE] + [n for n in PRESETS if runs.get(n)]
+LEGS = [BASELINE] + [n for n in PRESETS if rows(n)]
 missing = [n for n in [BASELINE] + PRESETS if not rows(n)]
 
-# Restrict to the tasks every leg has in common (the preset legs run a prefix of the baseline's).
 common = None
 for n in LEGS:
     ids = {str(x["task_id"]) for x in rows(n)}
     common = ids if common is None else (common & ids)
-common = sorted(common or [], key=lambda s: (len(s), s))
+COMMON = set(sorted(common or []))
+common_sorted = sorted(COMMON, key=lambda s: (len(s), s))
 
 
 def leg_rows(n):
-    return [x for x in rows(n) if str(x["task_id"]) in set(common)]
+    return [x for x in rows(n) if str(x["task_id"]) in COMMON]
 
 
 def leg_spans(n):
-    return [s for s in rows(n, "span_report.ndjson") if str(s["task_id"]) in set(common)]
+    return [s for s in rows(n, "span_report.ndjson") if str(s["task_id"]) in COMMON]
+
+
+def tool_spans(n):
+    return sorted(s["latency_ms"] for s in leg_spans(n) if s["name"] == TOOL_SPAN)
 
 
 def non_llm(x):
     """Agent time with the LLM path removed.
 
-    The legs ran sequentially against a shared external LLM gateway, so LLM latency carries
-    warm-up and response-caching effects that alias onto the plugin variable. Everything the
-    sidecar actually intercepts (MCP connect, tool calls) is in here.
+    The legs ran sequentially against a shared external LLM gateway, so LLM latency carries warm-up
+    and response-caching effects that alias onto the plugin variable. Everything the sidecar
+    actually intercepts (MCP connect, tool calls) is still in here.
     """
     return (x.get("agent_call_s") or 0) - (x.get("llm_total_s") or 0)
 
 
-def per_tool(x):
-    return (x.get("tool_total_s") or 0) / max(x.get("tool_count") or 1, 1)
+def tool_count(n):
+    return sum(x.get("tool_count") or 0 for x in leg_rows(n))
 
 
-GEN = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def judged(n):
+    """Judge-proxy requests inside this leg's run window, or None when no log was supplied."""
+    if not judge_ts:
+        return None
+    r = runs[n]
+    t = r["run_id"][:14]
+    start = dt.datetime(int(t[:4]), int(t[4:6]), int(t[6:8]), int(t[8:10]), int(t[10:12]),
+                        int(t[12:14]), tzinfo=timezone.utc)
+    end = start + dt.timedelta(seconds=(r.get("summary") or {}).get("wall_seconds", 0) + 20)
+    return sum(1 for x in judge_ts if start <= x <= end)
+
+
+JUDGED = {n: judged(n) for n in LEGS}
+AUTH = next((n for n in LEGS[1:] if JUDGED.get(n) == 0), None)
+# A leg whose every tool call was authorized: the only clean sample of a judged call.
+PURE = next((n for n in LEGS[1:] if JUDGED.get(n) and JUDGED[n] >= tool_count(n)), None)
+MIXED = [n for n in LEGS[1:] if JUDGED.get(n) and JUDGED[n] < tool_count(n)]
+
+GEN = datetime = dt.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 L = [f"# AuthBridge plugin overhead — comparative estimate ({PLATFORM})", "",
      f"**Report generated:** {GEN}  ",
      f"**Service version:** `{VERSION}`  ",
      f"**Target:** {data.get('base')}  ",
      f"**Legs compared:** #{BASELINE} (baseline) vs #" + ", #".join(str(n) for n in LEGS[1:]),
-     f"  ·  **tasks per leg:** {len(common)} (`{'`, `'.join(common)}`)", ""]
+     f"  ·  **tasks per leg:** {len(common_sorted)} (`{'`, `'.join(common_sorted)}`)  ",
+     f"**Judge-call evidence:** {'included' if judge_ts else '**ABSENT** — see the warning below'}",
+     ""]
 if missing:
-    L += [f"> ⚠️ Legs with no mirrored report and therefore excluded: "
+    L += [f"> ⚠️ Legs with no mirrored report, excluded: "
           f"{', '.join('#%d' % n for n in missing)}.", ""]
+if not judge_ts:
+    L += ["> ⚠️ **No judge-proxy log was supplied**, so this document cannot say how many tool calls "
+          "were actually authorized. Per-call medians from a leg that judged only *some* of its "
+          "calls mix two populations and are not comparable between presets. Re-generate with the "
+          "judge log before drawing per-preset conclusions.", ""]
 
 L += ["## What this is, and what it is not", "",
       "**A retrospective, matched-pairs observational comparison — not a designed experiment.** The "
@@ -127,46 +179,105 @@ for n in LEGS:
     rr = leg_rows(n)
     models = sorted({x.get("model") for x in rr if x.get("model")}) or ["—"]
     s = (sum(x.get("llm_input_tokens") or 0 for x in rr),
-         sum(x.get("llm_count") or 0 for x in rr),
-         sum(x.get("tool_count") or 0 for x in rr))
+         sum(x.get("llm_count") or 0 for x in rr), tool_count(n))
     sig[n] = s
     L.append("| %d | %s | %d | %d | %d | %d | %d | `%s` |" % (
         n, label(n), len(rr), s[0], sum(x.get("llm_output_tokens") or 0 for x in rr),
         s[1], s[2], models[0]))
-same = len({v for v in sig.values()}) == 1
+same = len(set(sig.values())) == 1
 L += ["",
       ("**Identical across every leg** — same input-token total, same LLM-call count, same tool-call "
        "count. The only variable is the plugin configuration."
        if same else
-       "⚠️ **The legs did NOT do identical work** (input tokens / call counts differ), so the latency "
-       "deltas below are confounded by workload and should not be read as plugin cost."), ""]
+       "⚠️ **The legs did NOT do identical work**, so the latency deltas below are confounded by "
+       "workload and must not be read as plugin cost."), ""]
+
+# --- is the judge consulted? -----------------------------------------------
+L += ["## Is the judge actually consulted? (read this before the latency tables)", "",
+      "The IBAC judge is **itself an LLM call** — the sidecar issues `POST /v1/chat/completions` "
+      "through the judge proxy for every action it authorizes. Two consequences: judge latency "
+      "inherits LLM-inference variance (hundreds of ms to ~10 s), and **the number of judged calls "
+      "is not always equal to the number of tool calls**. Counting them is therefore a prerequisite "
+      "for interpreting any per-call figure.", ""]
+if judge_ts:
+    L += ["| # | plugin config | tool calls | judge calls | reading |",
+          "|---|---|---:|---:|---|"]
+    for n in LEGS[1:]:
+        j, t = JUDGED[n], tool_count(n)
+        if j == 0:
+            read = "IBAC not engaged — **correct** for this preset"
+        elif j >= t:
+            read = "**every call authorized** — the clean sample"
+        else:
+            read = f"**only {j} of {t} authorized** — see below"
+        L.append(f"| {n} | {label(n)} | {t} | {j} | {read} |")
+    if MIXED:
+        L += ["",
+              "### The gap, and why it decides the latency question", "",
+              "Legs " + ", ".join(f"#{n} ({JUDGED[n]}/{tool_count(n)})" for n in MIXED) +
+              " authorized only some of their tool calls. That single fact explains an apparent "
+              "paradox in the raw numbers: a leg whose preset is a strict **superset** of another's "
+              "can show a *lower* median per-tool-call, purely because fewer of its calls paid the "
+              "judge. Its median is then a **mixture** of judged and unjudged calls and says nothing "
+              "about either. Unjudged calls are visible in the samples below as values sitting at "
+              "the sidecar-only floor.", "",
+              "Two candidate explanations, not distinguishable from these artifacts:", "",
+              "1. **Benign — decision caching under concurrency.** These legs run "
+              "`max_parallel_sessions=4`: several identical calls fire at once, all miss the cache "
+              "and consult the judge, and later ones hit a warm entry.",
+              "2. **A fail-open enforcement gap** — the action proceeded without an authorization "
+              "decision. For a security control this matters far more than the latency.", "",
+              "**Decisive test:** re-run the `ibac-only` leg at `max_parallel_sessions=1`. Serial "
+              "execution means caching would show ~1 judge call for the whole leg, while no caching "
+              "shows one per tool call. Roughly a minute of cluster time; until it is run, treat the "
+              "gap as **open**, not as established caching.", ""]
+else:
+    L += ["_Judge-call counts unavailable — supply the judge-proxy log (see the script docstring)._",
+          ""]
 
 # --- headline --------------------------------------------------------------
 b_non = med([non_llm(x) for x in leg_rows(BASELINE)])
-b_tool = med([per_tool(x) for x in leg_rows(BASELINE)])
 L += ["## Headline estimate", "",
-      "Two costs behave very differently, and separating them matters more than any single total:",
-      "",
-      "| # | plugin config | non-LLM time/task | Δ vs baseline | per tool call | Δ per tool call |",
+      "Three costs, deliberately kept apart — a single \"overhead\" number would hide the one that "
+      "scales:", "",
+      "| # | plugin config | non-LLM time/task | Δ vs baseline | judged/tool | per tool call (median) |",
       "|---|---|---:|---:|---:|---:|"]
 for n in LEGS:
     rr = leg_rows(n)
-    nl, pt = med([non_llm(x) for x in rr]), med([per_tool(x) for x in rr])
-    L.append("| %d | %s | %ss | %s | %ss | %s |" % (
-        n, label(n), f(nl),
-        "—" if n == BASELINE else f"**%+.2fs**" % (nl - b_non),
-        f(pt, "%.3f"),
-        "—" if n == BASELINE else f"**%+.3fs**" % (pt - b_tool)))
+    nl = med([non_llm(x) for x in rr])
+    tsp = med(tool_spans(n))
+    jt = "—" if n == BASELINE else (f"{JUDGED[n]}/{tool_count(n)}" if JUDGED.get(n) is not None else "?")
+    flag = " ⚠️mixture" if n in MIXED else ""
+    L.append("| %d | %s | %ss | %s | %s | %s ms%s |" % (
+        n, label(n), f(nl), "—" if n == BASELINE else "**%+.2fs**" % (nl - b_non),
+        jt, f(tsp, "%.0f"), flag))
+
+base_tool = med(tool_spans(BASELINE))
+auth_tool = med(tool_spans(AUTH)) if AUTH else None
+pure_tool = med(tool_spans(PURE)) if PURE else None
+L += ["", "The three components, each from the leg that measures it cleanly:", ""]
+L += [f"1. **Fixed cost of running a sidecar at all: ~{f(med([med([non_llm(x) for x in leg_rows(n)]) for n in LEGS[1:]]) - b_non, '%+.1f')} s per task.** "
+      "Roughly flat across all four presets, so it is a cost of using AuthBridge rather than of any "
+      "policy. The span table localises most of it to `connect_mcp`."]
+if AUTH and auth_tool is not None and base_tool is not None:
+    L.append(f"2. **An unjudged tool call costs ~{f(auth_tool - base_tool, '%+.0f')} ms** "
+             f"({f(base_tool, '%.0f')} → {f(auth_tool, '%.0f')} ms, from `{label(AUTH)}`): the proxy "
+             "hop and token exchange, with no authorization decision.")
+if PURE and pure_tool is not None and auth_tool is not None:
+    L.append(f"3. **A judged tool call adds a further ~{f(pure_tool - auth_tool, '%+.0f')} ms** "
+             f"({f(auth_tool, '%.0f')} → {f(pure_tool, '%.0f')} ms, from `{label(PURE)}` — the only "
+             "leg where *every* call was authorized, hence the only uncontaminated sample). This is "
+             "the judge's LLM round-trip, and it is the component that scales with tool traffic.")
+elif judge_ts:
+    L.append("3. _No leg authorized all of its tool calls, so the judged-call cost cannot be "
+             "isolated cleanly from this matrix._")
 L += ["",
-      "1. **A fixed cost for having a sidecar at all** — the `non-LLM time/task` column. It is large "
-      "(seconds, not milliseconds) and **roughly flat across the four presets**, so it is a cost of "
-      "using AuthBridge, not of any particular policy.",
-      "2. **A marginal cost per tool call** — the `per tool call` column. This one *does* track the "
-      "policy, and it is what scales with a real workload's traffic.", ""]
+      "**Do not rank the presets against each other from the `per tool call` column** — any row "
+      "marked ⚠️mixture is a blend of judged and unjudged calls.", ""]
 
 # --- span decomposition ----------------------------------------------------
 NAMED = ["connect_mcp", "create_agent", "MCP.CreateSession",
-         "execute_tool initial_observation", "execute_tool submit", "Evaluator.Evaluate"]
+         "execute_tool initial_observation", TOOL_SPAN, "Evaluator.Evaluate"]
 L += ["## Where the time goes (span-level)", "",
       "Median span latency in **ms**, read directly from each leg's `span_report.ndjson` — the "
       "sharpest instrument available, because it localises cost to a named operation instead of "
@@ -198,116 +309,106 @@ for n in LEGS:
 L.append("| *(spans per task, count)* | " + " | ".join(cells) + " |")
 
 cm = {n: med([s["latency_ms"] for s in span_cache[n] if s["name"] == "connect_mcp"]) for n in LEGS}
+with_sc = [cm[n] for n in LEGS[1:] if cm[n]]
 L += ["",
-      "The two rows that carry the finding:", "",
       f"- **`connect_mcp`** goes from **{f(cm[BASELINE], '%.0f')} ms** without a sidecar to "
-      f"**~{f(med([cm[n] for n in LEGS[1:] if cm[n]]), '%.0f')} ms** with one, and is essentially "
-      "constant across all four presets. That is the agent's first MCP connection now traversing "
-      "the proxy — a per-task admission cost, independent of policy.",
-      "- **`execute_tool submit`** is where policy shows up, and it separates the presets cleanly "
-      "(next section).",
+      f"**~{f(med(with_sc), '%.0f')} ms** with one, essentially constant across all four presets: "
+      "the agent's first MCP connection now traverses the proxy. A per-task admission cost, "
+      "independent of policy.",
+      f"- **`{TOOL_SPAN}`** is where policy shows up — but only once you know how many of those "
+      "calls were judged.",
       "",
       "⚠️ **The `chat` rows are not usable as plugin cost.** The legs ran sequentially against a "
-      "shared external LLM gateway with identical prompts, and the real-call latency *drops* "
-      "sharply in the later legs — the signature of response/prompt caching, not of plugins making "
-      "LLM calls faster. Any single very slow `create_agent`/probe is likewise gateway warm-up. "
-      "This is why the headline uses the non-LLM path.", ""]
+      "shared external LLM gateway with identical prompts, and real-call latency *drops* sharply in "
+      "the later legs — the signature of response/prompt caching, not of plugins accelerating LLM "
+      "calls. A lone very slow `create_agent`/probe is gateway warm-up. Hence the non-LLM headline.",
+      ""]
 
-# --- judge isolation -------------------------------------------------------
-auth = next((n for n in LEGS[1:] if "auth-only" in label(n)), None)
-ibac = next((n for n in LEGS[1:] if label(n).startswith("ibac-only")), None)
-L += ["## Isolating the IBAC judge", ""]
-if auth and ibac:
-    a = med([s["latency_ms"] for s in span_cache[auth] if s["name"] == "execute_tool submit"])
-    i = med([s["latency_ms"] for s in span_cache[ibac] if s["name"] == "execute_tool submit"])
-    b = med([s["latency_ms"] for s in span_cache[BASELINE] if s["name"] == "execute_tool submit"])
-    L += [f"`auth-only` and `ibac-only` differ by exactly one thing — whether an authorization "
-          f"decision is requested per action — so subtracting them isolates the judge round-trip:",
-          "",
-          "| step | per tool call | added |",
-          "|---|---:|---:|",
-          f"| direct to MCP (no sidecar) | {f(b, '%.0f')} ms | — |",
-          f"| + proxy hop and token exchange (`auth-only`) | {f(a, '%.0f')} ms | "
-          f"**+{f(a - b, '%.0f')} ms** |",
-          f"| + IBAC judge decision (`ibac-only`) | {f(i, '%.0f')} ms | "
-          f"**+{f(i - a, '%.0f')} ms** |",
-          "",
-          f"So the judge decision costs roughly **{f((i - a) / 1000, '%.1f')} s per authorized tool "
-          "call** on this cluster. Note IBAC only consults the judge for `isAction=true` calls — "
-          "`initialize` and `tools/list` are exempt and correctly show no cost.", ""]
-else:
-    L += ["_Both an `auth-only` and an `ibac-only` leg are needed to isolate the judge; one is "
-          "missing from this set._", ""]
+# --- full sample -----------------------------------------------------------
+L += [f"## Every `{TOOL_SPAN}` span (the whole sample)", "",
+      "Printed in full because n is small and the distributions overlap. This is also where the "
+      "judged/unjudged mixture is visible directly: unjudged calls sit near the sidecar-only floor "
+      f"({f(auth_tool, '%.0f') if auth_tool is not None else '?'} ms), judged calls well above it.",
+      "",
+      "| # | plugin config | judged/tool | latencies (ms, sorted) | median | mean |",
+      "|---|---|---:|---|---:|---:|"]
+for n in LEGS:
+    v = tool_spans(n)
+    jt = "—" if n == BASELINE else (f"{JUDGED[n]}/{tool_count(n)}" if JUDGED.get(n) is not None else "?")
+    L.append("| %d | %s | %s | %s | %s | %s |" % (
+        n, label(n) + (" ⚠️mixture" if n in MIXED else ""), jt,
+        ", ".join("%.0f" % x for x in v), f(med(v), "%.0f"),
+        f(st.mean(v), "%.0f") if v else "—"))
+L.append("")
 
 # --- projection ------------------------------------------------------------
-L += ["## Projection to the heavier benchmarks (NOT a measurement)", "",
-      "gsm8k makes only one substantive tool call per task, so it barely exercises the marginal "
-      "cost. Multiplying the measured per-call delta by the tool-call counts observed elsewhere in "
-      "the same matrix gives an indication of what the same policy would cost on a tool-heavy "
-      "workload:", ""]
-tool_per_task = {}
-for n, bench in ((9, "tau2"), (11, "appworld")):
-    rr = rows(n)
-    if rr:
-        tool_per_task[bench] = med([x.get("tool_count") or 0 for x in rr])
-if tool_per_task and ibac:
-    d_ibac = (med([s["latency_ms"] for s in span_cache[ibac] if s["name"] == "execute_tool submit"])
-              - med([s["latency_ms"] for s in span_cache[BASELINE]
-                     if s["name"] == "execute_tool submit"])) / 1000
-    L += ["| benchmark | tool calls/task (measured) | projected added latency/task at `ibac-only` |",
-          "|---|---:|---:|",
-          f"| gsm8k | {f(med([x.get('tool_count') or 0 for x in leg_rows(BASELINE)]), '%.0f')} | "
-          f"{f(d_ibac * med([x.get('tool_count') or 0 for x in leg_rows(BASELINE)]), '%.1f')} s |"]
-    for bench, tc in tool_per_task.items():
-        L.append(f"| {bench} | {f(tc, '%.0f')} | {f(d_ibac * tc, '%.1f')} s |")
+if PURE and pure_tool is not None and base_tool is not None:
+    delta = (pure_tool - base_tool) / 1000.0
+    L += ["## Projection to the heavier benchmarks (NOT a measurement)", "",
+          "gsm8k makes only one substantive tool call per task, so it barely exercises the marginal "
+          "cost. Multiplying the measured per-authorized-call delta "
+          f"(**{f(delta, '%.2f')} s**, from `{label(PURE)}`) by the tool-call counts observed "
+          "elsewhere in the same matrix indicates what the same policy would cost on a tool-heavy "
+          "workload:", "",
+          "| benchmark | tool calls/task (measured) | projected added latency/task |",
+          "|---|---:|---:|"]
+    gs = med([x.get("tool_count") or 0 for x in leg_rows(BASELINE)])
+    L.append(f"| gsm8k | {f(gs, '%.0f')} | {f(delta * (gs or 0), '%.1f')} s |")
+    for n, bench in ((9, "tau2"), (11, "appworld")):
+        rr = rows(n)
+        if rr:
+            tc = med([x.get("tool_count") or 0 for x in rr])
+            L.append(f"| {bench} | {f(tc, '%.0f')} | {f(delta * (tc or 0), '%.1f')} s |")
     L += ["",
-          "**This is a model-based projection, not a measurement.** It assumes per-call cost is "
-          "constant across benchmarks and unaffected by concurrency — untested. tau2 and appworld "
-          "were never run with a preset in this matrix, so treat these as a planning indication and "
-          "measure before relying on them.", ""]
+          "**A model-based projection, not a measurement.** It assumes per-call cost is constant "
+          "across benchmarks and unaffected by concurrency — untested, and the judged/tool gap above "
+          "is direct evidence that call *counts* behave unexpectedly under concurrency. tau2 and "
+          "appworld were never run with a preset in this matrix. Treat as a planning indication and "
+          "measure before relying on it.", ""]
 
-# --- raw per-task ----------------------------------------------------------
-L += ["## Per-task detail (the whole sample)", "",
-      f"n = {len(common)} tasks per leg, shown in full because the sample is small enough that "
-      "medians alone would hide the spread.", "",
+# --- per-task --------------------------------------------------------------
+L += ["## Per-task detail (non-LLM path)", "",
+      f"n = {len(common_sorted)} tasks per leg.", "",
       "| # | plugin config | non-LLM seconds per task (sorted) | median |",
       "|---|---|---|---:|"]
 for n in LEGS:
     v = sorted(round(non_llm(x), 1) for x in leg_rows(n))
-    L.append("| %d | %s | %s | %s |" % (n, label(n), ", ".join(f"{x:.1f}" for x in v),
-                                        f(med(v))))
+    L.append("| %d | %s | %s | %s |" % (n, label(n), ", ".join(f"{x:.1f}" for x in v), f(med(v))))
 
 # --- limitations -----------------------------------------------------------
 L += ["", "## Confidence and limitations", "",
       "**What this supports.** Order-of-magnitude, directional claims: a sidecar costs seconds per "
-      "task rather than milliseconds; IBAC enforcement adds ~2 s per authorized tool call; the "
-      "marginal cost scales with tool traffic, not with task count.", "",
+      "task rather than milliseconds; an authorized tool call costs ~2 s more than an unauthorized "
+      "one because the judge is an LLM inference; the marginal cost scales with tool traffic, not "
+      "with task count.", "",
       "**What it does not support.** A ranking of the presets against each other, a precise point "
       "estimate, or generalisation to other benchmarks, models or clusters.", "",
       "The specific threats, worst first:", "",
-      "1. **Order is confounded with condition.** The legs ran sequentially, so gateway warm-up, "
+      "1. **Judged-call counts differ from tool-call counts** (see above), so any per-call median "
+      "from an affected leg mixes two populations. This is the single largest interpretation trap "
+      "here, and it is why the judged-call cost is taken only from the leg that authorized "
+      "everything.",
+      "2. **Order is confounded with condition.** The legs ran sequentially, so gateway warm-up, "
       "response caching and cluster drift alias onto the plugin variable. This demonstrably "
-      "happened on the LLM path (hence its exclusion); the same mechanism could be quietly moving "
-      "the non-LLM numbers.",
-      f"2. **No replication.** One run per condition and n = {len(common)} tasks, so a condition "
-      "effect cannot be separated from ordinary run-to-run variance. The per-task spreads above "
-      "overlap between presets — which is why a preset measuring *cheaper* than a strict subset of "
-      "itself should be read as noise, not as a finding.",
-      "3. **`overhead_s` is a residual** (`agent_call − time_to_first_obs − llm_after_obs − "
-      "tool_total`), so it absorbs everything unmodelled, including measurement error. A "
-      "substantial part of the fixed cost rests on it.",
-      "4. **Cold start is not separated.** Each leg deployed fresh, so per-task figures amortise "
-      "agent warm-up over very few tasks. This likely *inflates* the fixed cost; a longer run "
-      "would push it down.",
-      "5. **Latency only.** The resource cost of the sidecar — CPU, memory, throttling — is "
-      "**unmeasured**: `has_infra` is false and every `*_cpu_utilization_pct` / `*_memory_max_mb` "
-      "field in these runs is `0.0`. For a proxy sidecar that axis often matters more for capacity "
-      "planning than latency does.", "",
-      "**To make this load-bearing:** run each preset at 20–50 tasks (amortises cold start and "
-      "separates the fixed from the marginal component), **interleave or repeat the conditions** to "
-      "break the order confound, populate the infra fields, and add the other platform as a "
-      "second independent measurement. That is a modest amount of cluster time and it would "
-      "replace four soft numbers with two solid ones.", ""]
+      "happened on the LLM path (hence its exclusion); the same mechanism could be moving the "
+      "non-LLM numbers.",
+      f"3. **No replication.** One run per condition and n = {len(common_sorted)} tasks, so a "
+      "condition effect cannot be separated from ordinary run-to-run variance. The judge being an "
+      "LLM call makes its latency intrinsically wide, so a ~1 s difference between presets is not "
+      "resolvable at this sample size.",
+      "4. **`overhead_s` is a residual** (`agent_call − time_to_first_obs − llm_after_obs − "
+      "tool_total`), absorbing everything unmodelled including measurement error. Part of the fixed "
+      "cost rests on it.",
+      "5. **Cold start is not separated.** Each leg deployed fresh, so per-task figures amortise "
+      "agent warm-up over very few tasks, likely *inflating* the fixed cost.",
+      "6. **Latency only.** The sidecar's CPU, memory and throttling cost is **unmeasured** — "
+      "`has_infra` is false and every `*_cpu_utilization_pct` / `*_memory_max_mb` field in these "
+      "runs is `0.0`. For a proxy sidecar that axis often matters more for capacity planning.", "",
+      "**To make this load-bearing:** run each preset at 20–50 tasks (amortises cold start, "
+      "separates fixed from marginal), **interleave or repeat the conditions** to break the order "
+      "confound, run `ibac-only` at `max_parallel_sessions=1` to settle the judged/tool gap, "
+      "populate the infra fields, and generate the companion document for the other platform as an "
+      "independent second measurement.", ""]
 
 # --- provenance ------------------------------------------------------------
 L += ["## Source artifacts", "",
@@ -320,11 +421,13 @@ for n in LEGS:
 L += ["",
       "Read with `report.ndjson` (per-task aggregates) and `span_report.ndjson` (per-span detail). "
       "Objects are anonymously readable; see the S3 section of the matching 12-run report for the "
-      "URL root and the key layout.", ""]
+      "URL root and key layout. Judge-call counts come from the in-cluster `ibac-judge` proxy's "
+      "request log, windowed to each leg's run interval.", ""]
 
 doc = "\n".join(L) + "\n"
 if OUT:
     OUT.write_text(doc)
-    print(f"wrote {OUT} ({len(doc)} bytes; legs {LEGS}, {len(common)} common tasks)")
+    print(f"wrote {OUT} ({len(doc)} bytes; legs {LEGS}, {len(common_sorted)} tasks, "
+          f"judge log {'yes' if judge_ts else 'no'}, pure-judged leg {PURE}, mixed {MIXED})")
 else:
     print(doc)
