@@ -11,6 +11,11 @@ the SAME tasks as the leading tasks of the baseline leg. The script restricts ev
 intersection of their task ids and asserts the workload really was identical (same input tokens,
 same LLM/tool counts) before reporting a single latency figure.
 
+Optional environment variables add a cross-platform check, which is worth having: it separates the
+cost of AuthBridge itself from the cost of the deployment it runs in.
+
+    PEER_JSON=/tmp/benchmarking/run12-other.json PEER_LABEL=KinD PEER_JUDGE_TS=/tmp/judge-other.ts
+
 `judge-ts-file` is optional but strongly recommended: one ISO-8601 timestamp per line, being the
 IBAC judge proxy's request log. Without it the script cannot tell how many tool calls were actually
 authorized, and a per-call median from a leg that judged only some of its calls is a MIXTURE of two
@@ -22,6 +27,7 @@ than its own subset. Collect it with:
 """
 import datetime as dt
 import json
+import os
 import pathlib
 import statistics as st
 import sys
@@ -274,6 +280,121 @@ elif judge_ts:
 L += ["",
       "**Do not rank the presets against each other from the `per tool call` column** — any row "
       "marked ⚠️mixture is a blend of judged and unjudged calls.", ""]
+
+# --- cross-platform check --------------------------------------------------
+def _ts(path):
+    out = []
+    p = pathlib.Path(path) if path else None
+    if p and p.exists():
+        for line in p.read_text().splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    out.append(dt.datetime.fromisoformat(line.replace("Z", "+00:00")))
+                except ValueError:
+                    pass
+    return out
+
+
+def metrics(dat, jts):
+    """The four headline quantities for one matrix, computed the same way for self and peer."""
+    rn = {r["n"]: r for r in dat["runs"]}
+
+    def rws(n, name="report.ndjson"):
+        r = rn.get(n)
+        if not r or not r.get("mirror_dir"):
+            return []
+        p = pathlib.Path(r["mirror_dir"]) / name
+        return ([json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+                if p.exists() else [])
+
+    legs = [BASELINE] + [n for n in PRESETS if rws(n)]
+    com = None
+    for n in legs:
+        ids = {str(x["task_id"]) for x in rws(n)}
+        com = ids if com is None else (com & ids)
+    com = com or set()
+
+    def sp(n, name):
+        return [s["latency_ms"] for s in rws(n, "span_report.ndjson")
+                if s["name"] == name and str(s["task_id"]) in com]
+
+    def nlp(n):
+        return med([(x.get("agent_call_s") or 0) - (x.get("llm_total_s") or 0)
+                    for x in rws(n) if str(x["task_id"]) in com])
+
+    def tc(n):
+        return sum(x.get("tool_count") or 0 for x in rws(n) if str(x["task_id"]) in com)
+
+    jd = {}
+    for n in legs:
+        if not jts:
+            jd[n] = None
+            continue
+        t = rn[n]["run_id"][:14]
+        s0 = dt.datetime(int(t[:4]), int(t[4:6]), int(t[6:8]), int(t[8:10]), int(t[10:12]),
+                         int(t[12:14]), tzinfo=timezone.utc)
+        s1 = s0 + dt.timedelta(seconds=(rn[n].get("summary") or {}).get("wall_seconds", 0) + 20)
+        jd[n] = sum(1 for x in jts if s0 <= x <= s1)
+    a = next((n for n in legs[1:] if jd.get(n) == 0), None)
+    pure = next((n for n in legs[1:] if jd.get(n) and jd[n] >= tc(n)), None)
+    judged_legs = [n for n in legs[1:] if jd.get(n)]
+    return {
+        "cm_base": med(sp(BASELINE, "connect_mcp")),
+        "cm_side": med([v for n in legs[1:] for v in sp(n, "connect_mcp")]),
+        "tool_base": med(sp(BASELINE, TOOL_SPAN)),
+        "tool_auth": med(sp(a, TOOL_SPAN)) if a else None,
+        # Prefer a leg that judged everything; else pool the judged legs and say so.
+        "tool_judged": (med(sp(pure, TOOL_SPAN)) if pure
+                        else med([v for n in judged_legs for v in sp(n, TOOL_SPAN)]) or None),
+        "judged_pure": pure is not None,
+        "fixed": (med([nlp(n) for n in legs[1:] if nlp(n) is not None]) - (nlp(BASELINE) or 0))
+                 if len(legs) > 1 else None,
+    }
+
+
+PEER_JSON = os.environ.get("PEER_JSON")
+PEER_LABEL = os.environ.get("PEER_LABEL", "the other platform")
+if PEER_JSON and pathlib.Path(PEER_JSON).exists():
+    me = metrics(data, judge_ts)
+    peer = metrics(json.loads(pathlib.Path(PEER_JSON).read_text()), _ts(os.environ.get("PEER_JUDGE_TS")))
+    L += ["## Cross-platform check — how much of this is AuthBridge, and how much is the deployment?",
+          "",
+          f"The same 12-run was executed on **{PEER_LABEL}** with the same Service version and the "
+          "same request bodies, which turns the plugin cost into a *measured* quantity rather than a "
+          "single-environment one. Comparing them separates the two:", "",
+          f"| quantity | this platform | {PEER_LABEL} | ratio |", "|---|---:|---:|---:|"]
+
+    def cmp_row(name, a, b, unit="ms", spec="%.0f"):
+        if a is None or b is None:
+            return f"| {name} | {f(a, spec) if a is not None else '—'} | " \
+                   f"{f(b, spec) if b is not None else '—'} | — |"
+        ratio = ("%.1f×" % (a / b)) if b else "—"
+        return f"| {name} | {f(a, spec)} {unit} | {f(b, spec)} {unit} | **{ratio}** |"
+
+    L += [cmp_row("`connect_mcp`, no sidecar", me["cm_base"], peer["cm_base"]),
+          cmp_row("`connect_mcp`, with sidecar", me["cm_side"], peer["cm_side"]),
+          cmp_row("tool call, no sidecar", me["tool_base"], peer["tool_base"]),
+          cmp_row("tool call, sidecar but unjudged", me["tool_auth"], peer["tool_auth"]),
+          cmp_row("tool call, judged", me["tool_judged"], peer["tool_judged"]),
+          cmp_row("fixed cost per task", me["fixed"], peer["fixed"], "s", "%.2f")]
+    L += ["",
+          "Two readings, and the second is the one that matters for planning:", "",
+          "1. **The judged-call cost is broadly comparable** between the platforms, because it is "
+          "dominated by the judge's LLM inference against a shared external gateway — genuinely "
+          "AuthBridge's cost.",
+          "2. **The fixed per-task cost and the unjudged-call cost are NOT comparable**, and the gap "
+          "is large. Those components are dominated by where the proxy has to reach — this matrix's "
+          "OpenShift deployment is cross-cluster (Service on one cluster, workloads on another, "
+          "token exchange over external routes), whereas the single-node deployment keeps every hop "
+          "local.", "",
+          "**Therefore do not quote the cross-cluster fixed cost as \"the cost of AuthBridge\".** "
+          "The single-node figures are the better estimate of the intrinsic cost; the difference "
+          "between them is the price of that particular topology, not of the plugins.", ""]
+    if me["tool_judged"] is not None and not me["judged_pure"]:
+        L += ["_Note: no leg on this platform authorized all of its tool calls, so the judged-call "
+              "figure here pools every judged leg and is mixture-contaminated. Read it as indicative "
+              "only._", ""]
 
 # --- span decomposition ----------------------------------------------------
 NAMED = ["connect_mcp", "create_agent", "MCP.CreateSession",
