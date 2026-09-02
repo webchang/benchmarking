@@ -304,7 +304,9 @@ def sec5():
          + "); the manifest does **not** list itself. Each entry carries "
            "`name`, `format`, `key`, public `url`, and `size_bytes`.", ""]
     if ex:
-        o += ["Example:", "", "```json", json.dumps(ex), "```", ""]
+        # Pretty-printed, not compact: the on-disk manifest is a single minified line, which in a
+        # fenced block does not wrap — it runs off the page on screen and off the sheet in print.
+        o += ["Example:", "", "```json", json.dumps(ex, indent=2), "```", ""]
     return "\n".join(o)
 
 
