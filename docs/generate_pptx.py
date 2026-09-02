@@ -237,7 +237,7 @@ ml = box(s, inch(1.85), inch(4.75), inch(1.35), inch(0.95), "MLflow", STORE, STO
 
 # Per-cluster instance container (dashed) — stacked shadow implies "many instances"
 CX, CY, CW, CH = inch(4.05), inch(1.2), inch(8.75), inch(4.35)
-for off, col in ((inch(0.22), RGBColor(0xDD, 0xDD, 0xDD)), (inch(0.11), RGBColor(0xCB, 0xCB, 0xCB))):
+for off, col in ((inch(0.16), RGBColor(0xF0, 0xF1, 0xF3)), (inch(0.08), RGBColor(0xE3, 0xE5, 0xE8))):
     sh = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, CX + off, CY + off, CW, CH)
     sh.fill.solid(); sh.fill.fore_color.rgb = col; sh.line.fill.background(); sh.shadow.inherit = False
 cont = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, CX, CY, CW, CH)
@@ -269,7 +269,7 @@ box(s, inch(9.35), inch(3.35), inch(3.05), inch(0.8), "A2A agent", WORK, WORK,
 
 # OTEL collector — lives in the workload cluster; forwards the agent's own OTLP spans to MLflow
 # (the agent can't auth to MLflow directly). Optional / off by default (workload_otel).
-box(s, inch(6.7), inch(4.5), inch(2.7), inch(0.78), "OTEL collector", WORK, WORK,
+box(s, inch(6.7), inch(4.72), inch(2.7), inch(0.70), "OTEL collector", WORK, WORK,
     font=12.5, font_color=WHITE, sub="forwards agent spans → MLflow", sub_color=LTTEAL)
 
 # ---- connectors (numbered) ----
@@ -295,19 +295,31 @@ dot(inch(3.78), inch(2.66), 3)
 # 4 Service -> Rossoctl
 connector(s, inch(3.2), inch(3.55), inch(4.35), inch(3.65))
 dot(inch(3.78), inch(3.58), 4)
-# 5 Rossoctl -> Workload (deploys)
-connector(s, inch(6.9), inch(3.45), inch(9.15), inch(2.9), color=ROSSO)
-dot(inch(8.0), inch(3.1), 5)
-# 6 Service -> Workload (run sessions) — long arrow across
-connector(s, inch(3.2), inch(4.1), inch(9.15), inch(3.7), color=WORK)
-dot(inch(7.7), inch(3.8), 6)
+# 5 Rossoctl -> Workload (deploys). 6 Service -> Workload (runs sessions).
+# BOTH deliberately terminate on the GROUP boundary, not on an inner box: each addresses the MCP
+# tool AND the A2A agent (5 creates both; 6 drives MCP sessions + A2A calls). Earlier they ended at
+# y=2.9 / y=3.7, which lined up with the two inner boxes and so read as arrows aimed at a specific
+# box and falling short. Aiming both at the group's vertical centre makes the group-level intent
+# unambiguous; the per-component wiring is drawn on the next slide.
+connector(s, inch(6.9), inch(3.55), inch(9.15), inch(3.22), color=ROSSO)
+dot(inch(7.55), inch(3.455), 5)
+# Arrow 6 must NOT take the direct line from the Service: (3.2,4.1) -> the group edge passes clean
+# through the Rossoctl box and strikes out its label. Route it instead through the free 0.25" lane
+# between Keycloak (bottom 2.95) and Rossoctl (top 3.20), then across to the group.
+connector(s, inch(3.2), inch(4.05), inch(3.2), inch(3.07), color=WORK, arrow=False)
+connector(s, inch(3.2), inch(3.07), inch(6.9), inch(3.07), color=WORK, arrow=False)
+connector(s, inch(6.9), inch(3.07), inch(9.15), inch(3.35), color=WORK)
+dot(inch(5.05), inch(3.07), 6)
 # 7 Service -> MLflow: EMIT the Agent.Session trace (establishes it first, before the workload spans)
 connector(s, inch(2.15), inch(4.30), inch(2.15), inch(4.75), color=STORE)
 dot(inch(2.15), inch(4.52), 7)
-# 8 A2A agent -> OTEL collector -> MLflow (optional workload spans; nest under 7; off by default)
-connector(s, inch(9.5), inch(4.15), inch(9.05), inch(4.5), color=WORK)
-connector(s, inch(6.7), inch(4.92), inch(3.2), inch(5.12), color=STORE, dashed=True)
-dot(inch(4.7), inch(5.0), 8)
+# 8 is a TWO-HOP path (the agent cannot authenticate to MLflow itself), so both hops are badged
+# 8a / 8b in flow order rather than leaving the first hop unlabelled, and both are dashed because
+# the whole path is optional (workload_otel, off by default).
+connector(s, inch(9.55), inch(4.15), inch(9.20), inch(4.72), color=WORK, dashed=True)
+dot(inch(9.30), inch(4.51), "8a")
+connector(s, inch(6.7), inch(5.07), inch(3.2), inch(5.24), color=STORE, dashed=True)
+dot(inch(4.95), inch(5.16), "8b")
 # 9 MLflow -> Service: READ back the Agent.Session traces (after the workload spans have landed)
 connector(s, inch(2.9), inch(4.75), inch(2.9), inch(4.30), color=STORE)
 dot(inch(2.9), inch(4.52), 9)
@@ -327,22 +339,173 @@ legend_l = [
 legend_r = [
     "6  Service runs benchmark sessions directly (MCP / A2A)",
     "7  Service emits the Agent.Session trace → MLflow (first)",
-    "8  A2A agent → OTEL collector → MLflow (optional; off by default)",
+    "8a A2A agent → OTEL collector   ·   8b collector → MLflow",
+      "      (optional workload spans — off by default)",
     "9  Service reads back Agent.Session traces (MLflow)",
     "10  Service exports run.json / report.* (S3)",
 ]
-lb = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, inch(0.4), inch(5.9), inch(12.5), inch(1.45))
+lb = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, inch(0.4), inch(5.80), inch(12.5), inch(1.35))
 lb.fill.solid(); lb.fill.fore_color.rgb = RGBColor(0xF4, 0xF6, 0xF8); lb.line.color.rgb = BORDER
 lb.shadow.inherit = False
 for col_x, items in ((inch(0.6), legend_l), (inch(6.7), legend_r)):
-    ltf = s.shapes.add_textbox(col_x, inch(5.98), inch(6.0), inch(1.3)).text_frame
+    ltf = s.shapes.add_textbox(col_x, inch(5.88), inch(6.0), inch(1.22)).text_frame
     ltf.word_wrap = True
     for i, item in enumerate(items):
         p = ltf.paragraphs[0] if i == 0 else ltf.add_paragraph()
         p.space_after = Pt(1)
         r = p.add_run(); r.text = item; _set_font(r, 10.5, False, INK)
 
-# ================================================ SLIDE 4: TWO-TOKEN AUTH
+# ============================ SLIDE 4: ARCHITECTURE — WORKLOAD SPECIFIC COMPONENTS
+# Zooms into the "Benchmark Workload" group of the previous slide. The point of the slide is that
+# the workload is NOT the same shape for every benchmark: two of the four components are optional,
+# and how many LLMs a task involves depends on the benchmark and on the plugin preset.
+s = prs.slides.add_slide(BLANK)
+title_band(s, "Architecture with Workload Specific Components",
+           "Inside the Benchmark Workload — what every benchmark has, and what only some of them add")
+
+
+def dash(sp):
+    """Dashed outline = the component is conditional, not always deployed.
+
+    The outline must CONTRAST with the fill or the dashes are invisible — the `box()` helper is
+    normally called with line == fill for a flat look, which silently defeated this on the first
+    render. White reads as a cut-out dash on every fill used here.
+    """
+    sp.line.color.rgb = WHITE
+    sp.line.width = Pt(1.75)
+    ln = sp.line._get_or_add_ln()
+    ln.append(ln.makeelement(qn("a:prstDash"), {"val": "dash"}))
+    return sp
+
+
+# Shared LLM gateway across the top: the agent, the tau2 user simulator and the IBAC judge all
+# call it, so drawing it once as a bar keeps three flows short and non-crossing.
+gw = box(s, inch(0.45), inch(1.20), inch(12.4), inch(0.6),
+         "shared LLM gateway   ·   ete-litellm / litemaas   (external)", STORE, STORE,
+         font=12.5, font_color=WHITE, shape=MSO_SHAPE.ROUNDED_RECTANGLE)
+
+# Left column. The judge sits ABOVE the Service deliberately: the sidecar that calls it is in the
+# lower row of the agent pod, so an upward-left arrow to the judge stays clear of the Service's own
+# two arrows. Ordering these the other way forces the judge and Service flows to cross.
+dash(box(s, inch(0.45), inch(2.35), inch(2.10), inch(0.75), "IBAC judge", KC, KC,
+         font=11.5, font_color=WHITE, sub="an LLM call", sub_color=LTORANGE))
+box(s, inch(0.45), inch(3.35), inch(2.10), inch(0.85), "Benchmarking Service", BLUE, BLUE,
+    font=11, font_color=WHITE)
+
+# The workload container. Its bottom band is intentionally deep (pods stop at 4.55) because the
+# Service → MCP server flow is routed through it — the Service drives the session lifecycle on the
+# MCP tool directly, it does not reach it via the agent.
+CX2, CY2, CW2, CH2 = inch(2.72), inch(1.95), inch(10.13), inch(3.30)
+cont2 = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, CX2, CY2, CW2, CH2)
+cont2.fill.solid(); cont2.fill.fore_color.rgb = RGBColor(0xFB, 0xFC, 0xFD)
+cont2.line.color.rgb = NAVY; cont2.line.width = Pt(1.5)
+cont2.line._get_or_add_ln().append(
+    cont2.line._get_or_add_ln().makeelement(qn("a:prstDash"), {"val": "dash"}))
+cont2.shadow.inherit = False
+# Label sits in the BAND BELOW the pods, not above them: the two vertical arrows to the LLM gateway
+# leave the pods through the container's top edge, and a header there was struck through by arrow 2.
+textbox(s, inch(2.90), inch(4.98), inch(9.7), inch(0.22),
+        [("Benchmark Workload — one per benchmark, namespace team1", 11, True, NAVY)])
+
+# --- A2A agent pod (left) ---
+ap = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, inch(3.00), inch(2.30), inch(4.55), inch(2.40))
+ap.fill.solid(); ap.fill.fore_color.rgb = LTTEAL; ap.line.color.rgb = WORK; ap.line.width = Pt(1.25)
+ap.shadow.inherit = False
+textbox(s, inch(3.12), inch(2.32), inch(4.3), inch(0.24), [("A2A agent pod", 11, True, WORK)])
+box(s, inch(3.12), inch(2.58), inch(4.31), inch(0.80), "agent container", WORK, WORK,
+    font=12, font_color=WHITE, sub="exgentic-a2a-tool_calling-<b>  ·  the LLM loop", sub_color=LTTEAL)
+dash(box(s, inch(3.12), inch(3.70), inch(4.31), inch(0.80), "AuthBridge sidecar", ROSSO, ROSSO,
+         font=12, font_color=WHITE, sub="proxy  ·  only with --plugin-preset", sub_color=LTPURPLE))
+
+# --- MCP tool pod (right) ---
+mp = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, inch(8.20), inch(2.30), inch(4.50), inch(2.40))
+mp.fill.solid(); mp.fill.fore_color.rgb = LTTEAL; mp.line.color.rgb = WORK; mp.line.width = Pt(1.25)
+mp.shadow.inherit = False
+textbox(s, inch(8.32), inch(2.32), inch(4.2), inch(0.24), [("MCP tool pod", 11, True, WORK)])
+dash(box(s, inch(8.32), inch(2.58), inch(4.26), inch(0.80), "user simulator LLM", WORK, WORK,
+         font=12, font_color=WHITE, sub="tau2 only  ·  plays the customer", sub_color=LTTEAL))
+box(s, inch(8.32), inch(3.70), inch(4.26), inch(0.80), "MCP server", WORK, WORK,
+    font=12, font_color=WHITE, sub="exgentic-mcp-<benchmark>  ·  tasks + evaluation", sub_color=LTTEAL)
+
+# --- flows. Every arrow lands on the component it actually addresses, never on a group edge. ---
+# 1 Service -> agent container (A2A send_prompt, once per task)
+connector(s, inch(2.55), inch(3.42), inch(3.12), inch(3.12), color=BLUE)
+dot(inch(2.84), inch(3.27), 1)
+# 2 Service -> MCP server. Routed down the gap beside the container and along its bottom band: the
+# Service calls create_session / evaluate_session / delete_session on the MCP tool ITSELF -- it does
+# not reach the MCP tool via the agent.
+connector(s, inch(2.64), inch(4.20), inch(2.64), inch(4.82), color=BLUE, arrow=False)
+connector(s, inch(2.64), inch(4.82), inch(9.10), inch(4.82), color=BLUE, arrow=False)
+connector(s, inch(9.10), inch(4.82), inch(9.10), inch(4.50), color=BLUE)
+dot(inch(6.00), inch(4.82), 2)
+# 3 agent -> LLM gateway (1 probe + N real chat calls)
+connector(s, inch(5.25), inch(2.58), inch(5.25), inch(1.80), color=ACCENT)
+dot(inch(5.25), inch(2.13), 3)
+# 4 tau2 only: the user simulator in the MCP pod is a second LLM
+connector(s, inch(10.45), inch(2.58), inch(10.45), inch(1.80), color=ACCENT)
+dot(inch(10.45), inch(2.13), 4)
+# 5 with a preset, the agent's MCP traffic goes through the sidecar first
+connector(s, inch(5.25), inch(3.38), inch(5.25), inch(3.70), color=ROSSO)
+dot(inch(5.25), inch(3.54), 5)
+# 6 sidecar -> MCP server, once the action is authorized. The inter-pod corridor is 0.65" wide so
+# this badge sits ON the line without touching either pod border.
+connector(s, inch(7.43), inch(4.10), inch(8.32), inch(4.10), color=ROSSO)
+dot(inch(7.88), inch(4.10), 6)
+# 7 sidecar -> IBAC judge, per isAction tool call
+connector(s, inch(3.12), inch(3.95), inch(2.55), inch(2.95), color=KC)
+dot(inch(2.95), inch(3.63), 7)
+# 8 the judge is itself an LLM call -- drawn, so the gateway's left third is not left unmoored
+connector(s, inch(1.50), inch(2.35), inch(1.50), inch(1.80), color=KC, dashed=True)
+dot(inch(1.50), inch(2.08), 8)
+
+# --- bottom: per-benchmark matrix (left) + flow legend (right) ---
+mtx = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, inch(0.45), inch(5.40), inch(7.35), inch(1.88))
+mtx.fill.solid(); mtx.fill.fore_color.rgb = RGBColor(0xF4, 0xF6, 0xF8)
+mtx.line.color.rgb = BORDER; mtx.shadow.inherit = False
+textbox(s, inch(0.62), inch(5.46), inch(7.0), inch(0.28),
+        [("Which components a benchmark actually gets", 11.5, True, NAVY)])
+COLS = ((inch(0.62), inch(1.15)), (inch(1.80), inch(2.50)),
+        (inch(4.35), inch(2.15)), (inch(6.55), inch(1.15)))
+ROWS = [
+    # tool-call figures are MEDIANS per task, measured over the v1.24 matrices on both platforms
+    # (gsm8k n=172 → 1, tau2 n=60 → 11, appworld n=41 → 13; appworld's spread is wide, 5–29).
+    ("benchmark", "MCP tool image", "LLMs per task", "tool calls"),
+    ("gsm8k", "exgentic-mcp-gsm8k", "1  (agent)", "~1"),
+    ("tau2", "exgentic-mcp-tau2", "2  (+ user simulator)", "~11"),
+    ("appworld", "exgentic-mcp-appworld", "1  (agent)", "~13"),
+    ("+ any preset", "unchanged", "+1 judge per action", "—"),
+]
+for ri, row in enumerate(ROWS):
+    y = inch(5.80) + ri * inch(0.27)
+    head = ri == 0
+    for (cx, cw), cell in zip(COLS, row):
+        textbox(s, cx, y, cw, inch(0.28),
+                [(cell, 10, head, NAVY if head else INK)])
+
+lg2 = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, inch(8.05), inch(5.40), inch(4.8), inch(1.88))
+lg2.fill.solid(); lg2.fill.fore_color.rgb = RGBColor(0xF4, 0xF6, 0xF8)
+lg2.line.color.rgb = BORDER; lg2.shadow.inherit = False
+flows = [
+    "1  Service → agent:  send_prompt, once per task",
+    "2  Service → MCP server:  list_tasks, create_session,",
+    "      evaluate_session, delete_session  (the verdict)",
+    "3  agent → gateway:  1 probe + N real chat calls",
+    "4  tau2 only:  the user simulator is a 2nd LLM",
+    "5  with a preset:  the agent's MCP calls go via the sidecar",
+    "6  sidecar → MCP server, once authorized",
+    "7  sidecar → judge, per isAction call",
+    "8  the judge is itself an LLM call",
+    "Dashed outline = present only in some configurations.",
+    "No preset: 5 + 6 become one direct agent → MCP call.",
+]
+ftf = s.shapes.add_textbox(inch(8.22), inch(5.46), inch(4.5), inch(1.80)).text_frame
+ftf.word_wrap = True
+for i, item in enumerate(flows):
+    p = ftf.paragraphs[0] if i == 0 else ftf.add_paragraph()
+    p.space_after = Pt(0)  # 11 lines must fit the panel; Pt(1) overflowed past the slide edge
+    r = p.add_run(); r.text = item; _set_font(r, 9.5, False, INK)
+
+# ================================================ SLIDE 5: TWO-TOKEN AUTH
 s = prs.slides.add_slide(BLANK)
 title_band(s, "The Two-Token Auth Model", "Why the caller's token is never forwarded upstream")
 
@@ -372,7 +535,7 @@ box(s, inch(1.6), inch(5.7), inch(10.1), inch(1.1),
     "so per-user attribution & audit live in the Service, keyed on (iss, preferred_username).",
     LTBLUE, BLUE, font=13.5, bold=True, font_color=INK)
 
-# ============================================ SLIDE 5: CATALOG + LIFECYCLE
+# ============================================ SLIDE 6: CATALOG + LIFECYCLE
 s = prs.slides.add_slide(BLANK)
 title_band(s, "Benchmark Catalog & Run Lifecycle")
 
@@ -415,7 +578,7 @@ for i, (ep, desc) in enumerate(steps):
 # down arrow spine
 connector(s, inch(6.72), inch(2.1), inch(6.72), inch(6.4), color=ACCENT, width=1.5)
 
-# ============================================ SLIDE 6: BOUNDARIES
+# ============================================ SLIDE 7: BOUNDARIES
 s = prs.slides.add_slide(BLANK)
 title_band(s, "What the Service Can & Cannot Enact", "The HTTP-only boundary, made explicit")
 
