@@ -98,11 +98,24 @@ def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def teardown(bench, H, namespace, agent):
+def teardown(bench, H, namespace, agent, attempts=3):
+    """Delete the deployment, retrying while the Service reports a failure.
+
+    A DELETE that returns 500 leaves the MCP tool behind, and the following POST /deploy then dies
+    with `409 Tool '<mcp>' already exists` — losing the leg outright (observed on OCP run #7,
+    2026-09-01). 204 is success and 404 means it was already gone; anything else is worth another
+    attempt before we build on top of a half-torn-down state.
+    """
     q = urllib.parse.urlencode({"namespace": namespace, "agent": agent})
-    st, _ = _req(f"{BASE}/benchmarks/{bench}/deploy?{q}", None, H, "DELETE", timeout=300)
-    log(f"  DELETE {bench} -> {st}")
-    time.sleep(15)
+    for attempt in range(1, attempts + 1):
+        st, _ = _req(f"{BASE}/benchmarks/{bench}/deploy?{q}", None, H, "DELETE", timeout=300)
+        log(f"  DELETE {bench} -> {st}" + (f" (attempt {attempt}/{attempts})" if attempt > 1 else ""))
+        time.sleep(15)
+        if st in (204, 404):
+            return True
+        if attempt < attempts:
+            log(f"  teardown returned {st} — retrying so the next deploy does not hit 409")
+    return False
 
 
 def deploy(bench, H, body, wait_s=1800, sidecar=False):
@@ -191,6 +204,12 @@ def execute(spec, H):
             teardown(bench, H, ns, agent)
         sidecar = bool(spec["deploy_body"].get("authbridge_enabled"))
         ok, why = deploy(bench, H, spec["deploy_body"], sidecar=sidecar)
+        # 409 == leftovers from a teardown that did not fully succeed. Tear down again and retry
+        # once: the alternative is losing the leg to a transient DELETE failure.
+        if not ok and "409" in (why or ""):
+            log("  deploy hit 409 (stale resources) — tearing down again and retrying once")
+            teardown(bench, H, ns, agent)
+            ok, why = deploy(bench, H, spec["deploy_body"], sidecar=sidecar)
         rec["deploy_ok"], rec["deploy_detail"] = ok, why
         if not ok:
             log(f"  !! deploy failed: {why}")
@@ -280,4 +299,7 @@ def main():
             r["n"], r["bench"], r.get("status"), sm.get("pass_rate"), sm.get("total")))
 
 
-main()
+# Guard the entry point: without it, merely *importing* this module (e.g. to reuse token()/_req()
+# from another script) kicks off a full 12-run against the live cluster.
+if __name__ == "__main__":
+    main()
