@@ -130,8 +130,14 @@ A few things that trip people up:
   offset applies to tau2 and appworld.
 - **Input tokens grow faster than output.** Every LLM call re-sends the whole conversation, so
   cumulative input scales roughly with the square of the turn count while output is bounded per
-  call. That is why tau2/appworld input dwarfs output, and why input-token variance between tasks is
-  always wider than output-token variance.
+  call. That is why tau2/appworld input *totals* dwarf output.
+- **But output is usually the more *variable* direction** — measured at OUT CV > IN CV in **27 of 33
+  legs**. This corrects an earlier claim here that input variance is always wider; it is not. On
+  single-turn gsm8k the prompt is near-constant (IN CV 0.06–0.09) while answer length swings with
+  how much the model reasons (OUT CV 0.4–1.0), so output varies ~8× more in relative terms. Only
+  long-horizon **appworld** inverts it (IN CV 0.30–0.93, above OUT), because its tasks differ
+  enormously in turn count and compounding context then dominates. Don't assume a direction —
+  check the CV columns.
 - **Task selection is deterministic.** A run takes the first `max_tasks` tasks, so the same
   `task_id` is the same task across runs and clusters, and a smaller run's tasks are a prefix of a
   larger one's. Cross-run comparisons on the same benchmark are therefore like-for-like.

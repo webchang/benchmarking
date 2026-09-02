@@ -162,11 +162,17 @@ for n in sorted(X):
 
 L += ["", "## Token distribution per task", "",
       "For each direction: `median` (robust centre), then `mean`, then `CV` (population sigma / "
-      "mean — how unevenly the cost is spread). A mean well above the median means right-skew: a "
-      "few long tasks dominate. CV shares its denominator with `mean`, not `median`, and is `—` "
-      "for single-task runs. Input CV runs systematically higher than output CV because every LLM "
-      "call re-sends the whole conversation, so cumulative input grows with the square of the turn "
-      "count while output stays bounded per call.", "",
+      "mean — dimensionless, so spread is comparable across benchmarks whose token counts differ "
+      "by orders of magnitude). A mean well above the median means right-skew: a few long tasks "
+      "dominate. CV shares its denominator with `mean`, not `median`, and is `—` for single-task "
+      "runs.", "",
+      "**Which direction varies more is benchmark-dependent, and output usually wins** — measured "
+      "at OUT CV > IN CV in 27 of 33 legs across these matrices. On single-turn gsm8k the prompt is "
+      "nearly constant (IN CV ~0.06-0.09) while answer length swings with how much the model "
+      "reasons (OUT CV 0.4-1.0). Only long-horizon **appworld** inverts it (IN CV 0.30-0.93 above "
+      "OUT), because there the tasks differ enormously in turn count and every call re-sends the "
+      "whole conversation, so compounding context dominates. tau2 sits between, marginally "
+      "output-led.", "",
       "### Input tokens", "",
       f"| # | bench | median {ALAB} | mean {ALAB} | CV {ALAB} | median {BLAB} | mean {BLAB} | CV {BLAB} |",
       "|---|---|---:|---:|---:|---:|---:|---:|"]
