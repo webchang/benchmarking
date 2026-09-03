@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""bench — a one-command client for the Benchmarking Service.
+"""One-command client CLI for the Benchmarking Service.
+
+Installed as the `benchmarking-cli` console script; also runnable without installing as
+`python -m benchmarking_service.cli` (or `uv run benchmarking-cli`).
 
 Drives the whole lifecycle (token -> deploy -> wait -> run -> poll -> report -> S3 mirror) either
 as a single `all` command or step by step, so the same tool serves both "just run it" and
@@ -10,15 +13,15 @@ as a single `all` command or step by step, so the same tool serves both "just ru
     export BM_ISS=https://keycloak-keycloak.apps.ykt2.hcp.res.ibm.com/realms/rossoctl
     export BM_PASSWORD_FILE=~/.rossoctl-ykt3/benchmarker.pass
     export BM_INSECURE=1
-    reference/bench.py all --benchmark gsm8k --tasks 1
+    benchmarking-cli all --benchmark gsm8k --tasks 1
 
     # or one step at a time
-    reference/bench.py deploy   --benchmark gsm8k
-    reference/bench.py wait     --benchmark gsm8k
-    reference/bench.py run      --benchmark gsm8k --tasks 1
-    reference/bench.py poll     --benchmark gsm8k --run <run_id>
-    reference/bench.py artifacts --benchmark gsm8k --run <run_id> --mirror /tmp/benchmarking
-    reference/bench.py teardown --benchmark gsm8k
+    benchmarking-cli deploy    --benchmark gsm8k
+    benchmarking-cli wait      --benchmark gsm8k
+    benchmarking-cli run       --benchmark gsm8k --tasks 1
+    benchmarking-cli poll      --benchmark gsm8k --run <run_id>
+    benchmarking-cli artifacts --benchmark gsm8k --run <run_id> --mirror /tmp/benchmarking
+    benchmarking-cli teardown  --benchmark gsm8k
 
 Environment (flags of the same name override):
     BM_BASE          Service base URL
@@ -35,13 +38,15 @@ token is ever printed — `token` reports the length and nothing else.
 
 Only the standard library is used, so this runs anywhere python3 does.
 
-NOTE: `run-12.py` (the canonical 12-run matrix driver) implements the same readiness gates
+This module is a CLIENT of the Service's HTTP API and shares no code with the server package it
+ships alongside; it deliberately imports nothing beyond the standard library, so it stays usable
+even where the server's dependencies are not installed.
+
+NOTE: `reference/run-12.py` (the canonical 12-run matrix driver) implements the same readiness gates
 independently. That duplication is deliberate for now — the matrix driver produced published
 results and is not worth destabilising to share code; consolidating the two behind this client is
 a follow-up.
 """
-from __future__ import annotations
-
 import argparse
 import json
 import os
@@ -284,7 +289,7 @@ def summarize(state: dict) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="bench", description="One-command client for the Benchmarking Service.",
+        prog="benchmarking-cli", description="One-command client for the Benchmarking Service.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("command",
                    choices=["all", "whoami", "list", "deploy", "wait", "run", "poll",

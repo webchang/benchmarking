@@ -1,6 +1,6 @@
 # Benchmarking Service — Developer Guide
 
-**Last modified:** 2026-09-02T21:57:21Z
+**Last modified:** 2026-09-03T01:10:37Z
 
 > Hand-maintained, unlike the generated `results/12run-*.md` files which stamp themselves. Bump the
 > line above when you edit this guide.
@@ -606,9 +606,9 @@ curl -s $CURL_OPTS -X DELETE "$SVC/benchmarks/$BENCH/deploy?$SCOPE" \
   -H "Authorization: Bearer $TOKEN" -o /dev/null -w 'teardown -> %{http_code}\n'   # 204
 ```
 
-### 6.1 The same thing in one command (`reference/bench.py`)
+### 6.1 The same thing in one command (`benchmarking-cli`)
 
-`reference/bench.py` is a stdlib-only client that performs §6.0 end to end — token, pre-clean,
+`benchmarking-cli` is a stdlib-only client that performs §6.0 end to end — token, pre-clean,
 deploy, the readiness-stability and agent-card gates, run, 424 retry, poll, artifact listing and
 local mirror — and exits non-zero if the run did not succeed.
 
@@ -619,7 +619,8 @@ export BM_PASSWORD_FILE="$HOME/.rossoctl-ykt3/benchmarker.pass"     # chmod 600
 export BM_INSECURE=1
 export BM_CARD_TEMPLATE="https://{service}-{namespace}.apps.ykt2.hcp.res.ibm.com/.well-known/agent-card.json"
 
-reference/bench.py all --benchmark gsm8k --tasks 1 --timeout 120 --mirror /tmp/benchmarking
+pip install -e .        # or: uv pip install -e .   — provides the benchmarking-cli entry point
+benchmarking-cli all --benchmark gsm8k --tasks 1 --timeout 120 --mirror /tmp/benchmarking
 ```
 
 Which prints, for the run above:
@@ -640,16 +641,20 @@ Which prints, for the run above:
 Each step is also a subcommand, so the CLI doubles as a way to see one HTTP call at a time:
 
 ```bash
-reference/bench.py whoami                                  # GET /hello
-reference/bench.py list                                    # GET /benchmarks
-reference/bench.py deploy    --benchmark gsm8k
-reference/bench.py wait      --benchmark gsm8k             # stability + card gates
-reference/bench.py run       --benchmark gsm8k --tasks 1    # prints the run_id
-reference/bench.py poll      --benchmark gsm8k --run "$RUN"
-reference/bench.py report    --benchmark gsm8k --run "$RUN" # GET …/report (needs MLflow)
-reference/bench.py artifacts --benchmark gsm8k --run "$RUN" --mirror /tmp/benchmarking
-reference/bench.py teardown  --benchmark gsm8k
+benchmarking-cli whoami                                  # GET /hello
+benchmarking-cli list                                    # GET /benchmarks
+benchmarking-cli deploy    --benchmark gsm8k
+benchmarking-cli wait      --benchmark gsm8k             # stability + card gates
+benchmarking-cli run       --benchmark gsm8k --tasks 1    # prints the run_id
+benchmarking-cli poll      --benchmark gsm8k --run "$RUN"
+benchmarking-cli report    --benchmark gsm8k --run "$RUN" # GET …/report (needs MLflow)
+benchmarking-cli artifacts --benchmark gsm8k --run "$RUN" --mirror /tmp/benchmarking
+benchmarking-cli teardown  --benchmark gsm8k
 ```
+
+No install? It runs straight from a checkout too — `python -m benchmarking_service.cli all …`
+(the module imports nothing beyond the standard library, so the server's dependencies are not
+needed to drive the API).
 
 Useful options: `--parallel` (`max_parallel_sessions`), `--task-timeout`, `--model` for a
 deploy-time swap, `--preset auth-only|ibac-only|full` and repeatable `--plugin ibac:observe` for
@@ -664,7 +669,7 @@ export BM_PASSWORD_FILE="$HOME/.rossoctl-kind/benchmarker.pass"; unset BM_INSECU
 
 > For the full 12-run matrix use `reference/run-12.py` instead (it drives `run12_specs.json` and
 > writes the state file the `gen-12run-*.py` report generators consume). It implements the same
-> gates independently; consolidating both behind `bench.py` is a known follow-up.
+> gates independently; consolidating both behind `benchmarking_service.cli` is a known follow-up.
 
 ### 6.2 Other validated flows
 

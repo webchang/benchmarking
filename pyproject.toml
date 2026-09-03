@@ -29,6 +29,8 @@ dev = [
 
 [project.scripts]
 benchmarking-service = "benchmarking_service.__main__:main"
+# Client-side CLI for driving the Service over its HTTP API (stdlib-only).
+benchmarking-cli = "benchmarking_service.cli:main"
 
 [build-system]
 requires = ["hatchling"]
