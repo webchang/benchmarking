@@ -13,6 +13,20 @@ whose usage-bearing span was lost (see the last bullet of "How to read our repor
 understates tau2 by 17% and appworld by 12%; pass rates and latencies use all 272 rows, since those
 are unaffected.
 
+<!-- Regenerate this list: python3 reference/gen_toc.py docs/BENCHMARKS_PRIMER.md -->
+<!-- toc -->
+
+**Contents**
+
+- [At a glance](#at-a-glance)
+- [gsm8k — the smoke test](#gsm8k--the-smoke-test)
+- [tau2 — the conversational one](#tau2--the-conversational-one)
+- [appworld — the hard one](#appworld--the-hard-one)
+- [How to read our reports](#how-to-read-our-reports)
+- [Picking a benchmark](#picking-a-benchmark)
+
+<!-- /toc -->
+
 ---
 
 ## At a glance
@@ -79,7 +93,7 @@ from the absence of an override. Switching domains would change the numbers, and
 
 **The key architectural difference.** tau2 introduces a **second LLM — a user simulator** that plays
 the customer. So each task involves two models talking to each other, plus tool calls. That single
-fact explains most of tau2's profile: ~10 LLM calls and ~11 tool calls per task, and ~69k input
+fact explains most of tau2's profile: ~11 LLM calls and ~11 tool calls per task, and ~83k input
 tokens because the whole growing conversation is re-sent on every turn.
 
 **What it stresses.** Conversation state, tool selection over many turns, and the agent's ability to
@@ -107,8 +121,8 @@ APIs, chaining many calls, and handling intermediate state.
 so ids look like `21abae1_1`, `21abae1_2`, `21abae1_3` — a scenario hash plus a sub-task number. Each
 still runs as an independent session.
 
-**What it stresses.** Long-horizon planning and composition. ~21 LLM calls and ~14 tool calls per
-task, ~184k input tokens, and a median of **4 minutes per task**.
+**What it stresses.** Long-horizon planning and composition. ~24 LLM calls and ~13 tool calls per
+task, ~211k input tokens, and a median of **4 minutes per task**.
 
 **Expect a pass rate of 0.0 — and that is the honest result.** We run appworld with a *generic*
 `tool_calling` agent, which is not specialised for it. 0.0 does not mean the platform is broken; the
