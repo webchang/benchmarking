@@ -324,10 +324,12 @@ for _txt in ("deploy the workload", "run the benchmark", "read + export results"
     _pp = svtf.add_paragraph(); _pp.alignment = PP_ALIGN.LEFT; _pp.level = 1
     _rr = _pp.add_run(); _rr.text = "• " + _txt; _set_font(_rr, 11, False, WHITE)
 
-box(s, inch(0.4), inch(4.75), inch(1.35), inch(0.95), "S3", STORE, ACCENT,
-    font=13, font_color=WHITE, sub="shared sink", sub_color=LTGRAY)
-box(s, inch(1.85), inch(4.75), inch(1.55), inch(0.95), "Experiment Tracker", STORE, STORE,
-    font=11.5, font_color=WHITE)
+# Both stores widened and their type sized down to carry the longer role-based labels. The "shared
+# sink" subtitle is dropped: the new S3 label already says it.
+box(s, inch(0.4), inch(4.75), inch(1.45), inch(0.95),
+    "Shared store of benchmark run results", STORE, ACCENT, font=9.5, font_color=WHITE)
+box(s, inch(1.95), inch(4.75), inch(1.45), inch(0.95), "Experiment Tracker", STORE, STORE,
+    font=11, font_color=WHITE)
 
 # the instances container — stacked shadow implies "many of these"
 CX3, CY3, CW3, CH3 = inch(4.05), inch(1.2), inch(8.75), inch(4.35)
@@ -362,13 +364,13 @@ connector(s, inch(1.8), inch(2.15), inch(1.8), inch(2.45)); dot(inch(2.05), inch
 connector(s, inch(3.2), inch(3.15), inch(4.35), inch(3.15), color=ROSSO); dot(inch(3.78), inch(2.96), 2)
 connector(s, inch(6.9), inch(3.00), inch(9.15), inch(3.00), color=ROSSO); dot(inch(8.02), inch(2.81), 3)
 connector(s, inch(3.2), inch(4.10), inch(9.15), inch(3.70), color=WORK); dot(inch(7.70), inch(3.79), 4)
-connector(s, inch(2.15), inch(4.30), inch(2.15), inch(4.75), color=STORE); dot(inch(2.15), inch(4.52), 5)
+connector(s, inch(2.35), inch(4.30), inch(2.35), inch(4.75), color=STORE); dot(inch(2.35), inch(4.52), 5)
 connector(s, inch(9.55), inch(3.90), inch(8.85), inch(4.72), color=WORK, dashed=True)
 dot(inch(9.25), inch(4.33), "6a")
-connector(s, inch(6.15), inch(5.07), inch(3.42), inch(5.22), color=STORE, dashed=True)
+connector(s, inch(6.15), inch(5.07), inch(3.40), inch(5.22), color=STORE, dashed=True)
 dot(inch(4.78), inch(5.145), "6b")
-connector(s, inch(2.9), inch(4.75), inch(2.9), inch(4.30), color=STORE); dot(inch(2.9), inch(4.52), 7)
-connector(s, inch(1.1), inch(4.30), inch(1.1), inch(4.75), color=ACCENT); dot(inch(0.88), inch(4.52), 8)
+connector(s, inch(3.05), inch(4.75), inch(3.05), inch(4.30), color=STORE); dot(inch(3.05), inch(4.52), 7)
+connector(s, inch(1.05), inch(4.30), inch(1.05), inch(4.75), color=ACCENT); dot(inch(0.83), inch(4.52), 8)
 
 _lgl = ["1  Client → Service:  one bearer token, one hostname",
         "2  Service → deployment helper:  create the workload",
@@ -377,7 +379,7 @@ _lgl = ["1  Client → Service:  one bearer token, one hostname",
 _lgr = ["5  Service → Experiment Tracker:  emit the per-task trace",
         "6a workload → Telemetry Collector  ·  6b collector → Tracker",
         "7  Experiment Tracker → Service:  read the records back",
-        "8  Service → S3:  export the run's artifacts"]
+        "8  Service → shared store:  export the run's artifacts"]
 _lb = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, inch(0.4), inch(5.85), inch(12.5), inch(1.15))
 _lb.fill.solid(); _lb.fill.fore_color.rgb = RGBColor(0xF4, 0xF6, 0xF8)
 _lb.line.color.rgb = BORDER; _lb.shadow.inherit = False
