@@ -1,6 +1,6 @@
 # Benchmarking Service — Developer Guide
 
-**Last modified:** 2026-09-03T03:22:06Z
+**Last modified:** 2026-09-03T03:37:35Z
 
 > Hand-maintained, unlike the generated `results/12run-*.md` files which stamp themselves. Bump the
 > line above when you edit this guide.
@@ -46,6 +46,7 @@ multi-turn) on the `ykt3` and `kind-rossoctl` clusters.
   - [6.0 Run #1 start to finish, on the ykt3 Service driving ykt2 workloads](#60-run-1-start-to-finish-on-the-ykt3-service-driving-ykt2-workloads)
   - [6.1 The same thing in one command (`benchmarking-cli`)](#61-the-same-thing-in-one-command-benchmarking-cli)
   - [6.2 Other validated flows](#62-other-validated-flows)
+  - [6.3 The whole 12-run matrix in one command (`reference/run-12.py`)](#63-the-whole-12-run-matrix-in-one-command-referencerun-12py)
 - [7. Known limits & error codes](#7-known-limits--error-codes)
 - [8. Extending the catalog (adding or changing a benchmark)](#8-extending-the-catalog-adding-or-changing-a-benchmark)
   - [8.1 What a definition holds](#81-what-a-definition-holds)
@@ -792,8 +793,7 @@ export BM_ISS="http://keycloak.localtest.me:8080/realms/rossoctl"
 export BM_PASSWORD_FILE="$HOME/.rossoctl-kind/benchmarker.pass"; unset BM_INSECURE BM_CARD_TEMPLATE
 ```
 
-> For the full 12-run matrix use `reference/run-12.py` instead (it drives `run12_specs.json` and
-> writes the state file the `gen-12run-*.py` report generators consume). It implements the same
+> For the full 12-run matrix use `reference/run-12.py` instead — see §6.3. It implements the same
 > gates independently; consolidating both behind `benchmarking_service.cli` is a known follow-up.
 
 ### 6.2 Other validated flows
@@ -823,6 +823,93 @@ curl -s -X POST "$SVC/benchmarks/tau2/runs" -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"max_tasks": 20, "max_parallel_sessions": 4, "timeout_seconds": 1800}'
 ```
+
+### 6.3 The whole 12-run matrix in one command (`reference/run-12.py`)
+
+Same idea as §6.1, one level up: instead of a single benchmark run, this drives all **12 canonical
+parameterized runs** — gsm8k at three sizes, a model swap, the four AuthBridge presets, tau2 at two
+sizes, appworld at two — deploying each leg fresh, mirroring every artifact, and writing one state
+file the report generators read.
+
+Unlike `benchmarking-cli`, this one **is** repo-only: it is a matrix driver tied to
+`run12_specs.json`, not something you install. Clone first.
+
+```bash
+git clone https://github.com/webchang/benchmarking && cd benchmarking
+
+# Same five variables as §6.1 — plus a label, which names the state file and the reports.
+export BM_BASE=https://benchmarking-rossoctl-system.apps.ykt3.hcp.res.ibm.com
+export BM_ISS=https://keycloak-keycloak.apps.ykt2.hcp.res.ibm.com/realms/rossoctl
+export BM_PASSWORD_FILE="$HOME/.rossoctl-ykt3/benchmarker.pass"
+export BM_INSECURE=1
+export BM_CARD_TEMPLATE="https://{service}-{namespace}.apps.ykt2.hcp.res.ibm.com/.well-known/agent-card.json"
+export BM_LABEL=ocp-v124
+
+python3 reference/run-12.py            # ~1h55m; log it: ... 2>&1 | tee /tmp/run12-ocp.log
+```
+
+It ends with a per-leg summary and the state file path:
+
+```
+[21:03:57] === done in 6884s; 12 runs -> /tmp/benchmarking/run12-ocp-v124.json
+[21:03:57]   #1  gsm8k     succeeded      pass=1.0   tasks=1
+[21:03:57]   #2  gsm8k     succeeded      pass=1.0   tasks=10
+...
+[21:03:57]   #12 appworld  succeeded      pass=0.0   tasks=20
+```
+
+Then turn that state file into the three documents (all numbers derived from the mirrored
+artifacts — nothing transcribed):
+
+```bash
+# 1. the 12-run report. <date> is the date the RUNS executed, from the modal run_id prefix.
+python3 reference/gen-12run-report.py /tmp/benchmarking/run12-ocp-v124.json v1.24 \
+  "OpenShift — Service on ykt3, workloads on ykt2" results/12run-report-v1.24-20260901-ocp.md
+
+# 2. OCP vs KinD, once both matrices exist
+python3 reference/gen-12run-comparison.py \
+  /tmp/benchmarking/run12-ocp-v124.json OCP \
+  /tmp/benchmarking/run12-kind-v124.json KinD v1.24 \
+  results/12run-comparison-v1.24-20260902.md
+
+# 3. AuthBridge plugin overhead. The judge log is what tells it how many tool calls were actually
+#    authorized — without it, per-preset medians mix judged and unjudged calls and mislead.
+oc -n rossoctl-system logs deploy/ibac-judge --since=6h --timestamps \
+  | grep -vi healthz | awk '{print $1}' > /tmp/judge-ocp.ts
+PEER_JSON=/tmp/benchmarking/run12-kind-v124.json PEER_LABEL="single-node KinD" \
+PEER_JUDGE_TS=/tmp/judge-kind.ts \
+python3 reference/gen-plugin-overhead.py /tmp/benchmarking/run12-ocp-v124.json v1.24 \
+  "OpenShift — Service on ykt3, workloads on ykt2" \
+  results/12run-plugin-overhead-v1.24-20260901-ocp.md /tmp/judge-ocp.ts
+```
+
+Switching to KinD is the same three-line change as §6.1 plus a new label:
+
+```bash
+export BM_BASE=http://benchmarking.localtest.me:8080
+export BM_ISS=http://keycloak.localtest.me:8080/realms/rossoctl
+export BM_PASSWORD_FILE="$HOME/.rossoctl-kind/benchmarker.pass"
+unset BM_INSECURE BM_CARD_TEMPLATE
+export BM_LABEL=kind-v124
+python3 reference/run-12.py            # ~1h55m on a single node too
+```
+
+**Run the two platforms sequentially, not in parallel** — they share the external LLM gateway, so
+overlapping them makes the wall-time comparison meaningless.
+
+Other knobs, all optional:
+
+| Variable | Default | Use |
+|---|---|---|
+| `BM_ONLY` | all 12 | comma-separated leg numbers, e.g. `BM_ONLY=7` to re-run one leg, `BM_ONLY=1,2,3` for a smoke pass |
+| `BM_STABLE_POLLS` | `4` | consecutive ready polls required before a run is submitted |
+| `BM_SETTLE_PLAIN` / `BM_SETTLE_SIDECAR` | `15` / `45` | post-ready settle seconds; sidecar deploys need longer |
+| `BM_USER` / `BM_CLIENT` | `benchmarker` / `rossoctl` | non-default realm identity |
+| `BM_PASSWORD` | — | the password inline, instead of `BM_PASSWORD_FILE`. Prefer the file (`chmod 600`): an exported variable leaks into `env`, process listings and shell history |
+
+`BM_ONLY` is how you repair a matrix without redoing it: a leg that failed to deploy can be re-run
+on its own and merged into the state file, which is exactly what happened to leg #7 of the v1.24
+OCP matrix (a transient `DELETE -> 500` left a stale tool behind and the deploy hit `409`).
 
 ---
 
