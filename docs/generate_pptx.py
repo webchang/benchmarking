@@ -4,10 +4,14 @@ Run with the project env plus python-pptx (no need to add it as a project dep):
 
     uv run --with python-pptx python docs/generate_pptx.py
 
-Produces a 16:9 deck: title, overview + key design decisions, an architecture
-diagram (Client / Service / per-cluster Keycloak + Rossoctl + Workload / MLflow / S3),
-the two-token auth model, the benchmark catalog + run lifecycle, and the enact/report
-boundaries. Content is sourced from docs/SERVICE_DESIGN_DECISIONS.md.
+Produces an 11-slide 16:9 deck: title, agenda, overview + key design decisions, two
+architecture diagrams (the whole system, then inside the workload), the two-token auth
+model, the benchmark catalog + run lifecycle, three benchmark slides, and the
+enact/report boundaries.
+
+Content is sourced from docs/SERVICE_DESIGN_DECISIONS.md and docs/BENCHMARKS_PRIMER.md;
+every measured figure on the benchmark slides comes from our own runs over rows with
+intact telemetry, not from the benchmarks' published papers.
 """
 
 from pptx import Presentation
@@ -146,6 +150,36 @@ def inch(v):
     return int(v * IN)
 
 
+
+def grid(slide, x, y, w, h, rows, col_w, head_fill=NAVY, head_color=WHITE, font=10.5,
+         first_col_bold=True):
+    """A compact data table. python-pptx's native table beats hand-placed textboxes here: the
+    column widths stay locked, so nothing drifts out of alignment when a label grows."""
+    shape = slide.shapes.add_table(len(rows), len(rows[0]), Emu(int(x)), Emu(int(y)),
+                                   Emu(int(w)), Emu(int(h)))
+    tbl = shape.table
+    tbl.first_row = True
+    tbl.horz_banding = False
+    for i, cw in enumerate(col_w):
+        tbl.columns[i].width = Emu(int(cw))
+    for r, row in enumerate(rows):
+        for c, val in enumerate(row):
+            cell = tbl.cell(r, c)
+            cell.margin_left = cell.margin_right = Pt(5)
+            cell.margin_top = cell.margin_bottom = Pt(1)
+            cell.vertical_anchor = MSO_ANCHOR.MIDDLE
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = head_fill if r == 0 else (
+                WHITE if r % 2 else RGBColor(0xF4, 0xF6, 0xF8))
+            para = cell.text_frame.paragraphs[0]
+            para.alignment = PP_ALIGN.LEFT if c == 0 else PP_ALIGN.CENTER
+            run = para.add_run()
+            run.text = str(val)
+            _set_font(run, font, r == 0 or (c == 0 and first_col_bold),
+                      head_color if r == 0 else INK)
+    return tbl
+
+
 # ============================================================ SLIDE 1: TITLE
 s = prs.slides.add_slide(BLANK)
 bg = s.shapes.add_shape(MSO_SHAPE.RECTANGLE, 0, 0, SW, SH)
@@ -160,7 +194,35 @@ textbox(s, inch(0.9), inch(4.7), inch(11.5), inch(1.4),
         [("A pure-Python, HTTP-only service that deploys and evaluates agent benchmarks", 16, False, RGBColor(0xD8, 0xE3, 0xF0)),
          ("across multiple cluster-specific Rossoctl instances.", 16, False, RGBColor(0xD8, 0xE3, 0xF0))])
 
-# ================================================ SLIDE 2: OVERVIEW + DECISIONS
+# ================================================================ SLIDE 2: AGENDA
+s = prs.slides.add_slide(BLANK)
+title_band(s, "Agenda", "What this deck covers, in order")
+items = [
+    ("Overview & key design decisions", "what the Service is, and the seven choices that shape it"),
+    ("Architecture", "client, Service, and the per-cluster instance selected by JWT iss"),
+    ("Architecture with workload specific components",
+     "inside the workload: sidecar, user simulator, IBAC judge"),
+    ("The two-token auth model", "why the caller's token is never forwarded upstream"),
+    ("Benchmark catalog & run lifecycle", "the three benchmarks and the REST flow that drives them"),
+    ("The three benchmarks — what they measure",
+     "a difficulty ladder, what each stresses, and how to read the numbers"),
+    ("What the Service can & cannot enact", "the HTTP-only boundary, made explicit"),
+]
+y = inch(1.35)
+for i, (head, sub) in enumerate(items, 1):
+    chip = s.shapes.add_shape(MSO_SHAPE.OVAL, inch(0.75), y + inch(0.07), inch(0.42), inch(0.42))
+    chip.fill.solid(); chip.fill.fore_color.rgb = ACCENT
+    chip.line.color.rgb = WHITE; chip.line.width = Pt(1.25); chip.shadow.inherit = False
+    ctf = chip.text_frame; ctf.margin_left = ctf.margin_right = 0
+    ctf.margin_top = ctf.margin_bottom = 0
+    cp = ctf.paragraphs[0]; cp.alignment = PP_ALIGN.CENTER
+    cr = cp.add_run(); cr.text = str(i); _set_font(cr, 13, True, WHITE)
+    textbox(s, inch(1.40), y, inch(11.3), inch(0.30), [(head, 16, True, NAVY)])
+    textbox(s, inch(1.40), y + inch(0.30), inch(11.3), inch(0.28),
+            [(sub, 12, False, RGBColor(0x3A, 0x46, 0x54))])
+    y += inch(0.72)
+
+# ================================================ SLIDE 3: OVERVIEW + DECISIONS
 s = prs.slides.add_slide(BLANK)
 title_band(s, "Overview & Key Design Decisions")
 
@@ -208,7 +270,7 @@ for head, body in decisions:
     _set_font(r2, 10.5, False, RGBColor(0x3A, 0x46, 0x54))
     y += inch(0.70)
 
-# ================================================== SLIDE 3: ARCHITECTURE
+# ================================================== SLIDE 4: ARCHITECTURE
 s = prs.slides.add_slide(BLANK)
 title_band(s, "Architecture", "Relations between client, service, cluster-specific Keycloak / Rossoctl / workload, MLflow & S3")
 
@@ -358,7 +420,7 @@ for col_x, items in ((inch(0.6), legend_l), (inch(6.7), legend_r)):
         p.space_after = Pt(0)  # 7 lines in the right column; Pt(1) pressed line 10 into the border
         r = p.add_run(); r.text = item; _set_font(r, 10.5, False, INK)
 
-# ============================ SLIDE 4: ARCHITECTURE — WORKLOAD SPECIFIC COMPONENTS
+# ============================ SLIDE 5: ARCHITECTURE — WORKLOAD SPECIFIC COMPONENTS
 # Zooms into the "Benchmark Workload" group of the previous slide. The point of the slide is that
 # the workload is NOT the same shape for every benchmark: two of the four components are optional,
 # and how many LLMs a task involves depends on the benchmark and on the plugin preset.
@@ -510,7 +572,7 @@ for i, item in enumerate(flows):
     p.space_after = Pt(0)  # 11 lines must fit the panel; Pt(1) overflowed past the slide edge
     r = p.add_run(); r.text = item; _set_font(r, 9.5, False, INK)
 
-# ================================================ SLIDE 5: TWO-TOKEN AUTH
+# ================================================ SLIDE 6: TWO-TOKEN AUTH
 s = prs.slides.add_slide(BLANK)
 title_band(s, "The Two-Token Auth Model", "Why the caller's token is never forwarded upstream")
 
@@ -540,7 +602,7 @@ box(s, inch(1.6), inch(5.7), inch(10.1), inch(1.1),
     "so per-user attribution & audit live in the Service, keyed on (iss, preferred_username).",
     LTBLUE, BLUE, font=13.5, bold=True, font_color=INK)
 
-# ============================================ SLIDE 6: CATALOG + LIFECYCLE
+# ============================================ SLIDE 7: CATALOG + LIFECYCLE
 s = prs.slides.add_slide(BLANK)
 title_band(s, "Benchmark Catalog & Run Lifecycle")
 
@@ -549,7 +611,7 @@ box(s, inch(0.45), inch(1.25), inch(5.75), inch(0.5), "Catalog (static registry)
 for i, (name, desc, col, lt) in enumerate([
     ("gsm8k", "single-turn · needs hf-secret + openai-secret", WORK, LTTEAL),
     ("tau2", "multi-turn · user-simulator LLM runs server-side in the MCP pod · raise timeout", ROSSO, LTPURPLE),
-    ("appworld", "declared + deploys; MCP image blocked by its own venv-service timeout", KC, LTORANGE),
+    ("appworld", "long-horizon across simulated apps · runs e2e · raise task_timeout_seconds", KC, LTORANGE),
 ]):
     y = inch(1.95) + i * inch(1.15)
     b = box(s, inch(0.45), y, inch(5.75), inch(1.0), name, lt, col, font=15, bold=True, font_color=col)
@@ -583,7 +645,132 @@ for i, (ep, desc) in enumerate(steps):
 # down arrow spine
 connector(s, inch(6.72), inch(2.1), inch(6.72), inch(6.4), color=ACCENT, width=1.5)
 
-# ============================================ SLIDE 7: BOUNDARIES
+
+# ================================ SLIDES 8-10: THE THREE BENCHMARKS (from BENCHMARKS_PRIMER.md)
+# Every figure is measured from our own v1.24/v1.23 runs, over rows with intact telemetry -- not
+# quoted from the benchmarks' published papers.
+s = prs.slides.add_slide(BLANK)
+title_band(s, "The Three Benchmarks — a Difficulty Ladder",
+           "Not interchangeable suites: each costs ~an order of magnitude more than the last")
+grid(s, inch(0.45), inch(1.30), inch(12.4), inch(4.55), [
+    ("", "gsm8k", "tau2", "appworld"),
+    ("What it tests", "multi-step arithmetic", "multi-turn dialogue + tools", "long-horizon app automation"),
+    ("Tasks measured", "172", "60  (50 clean)", "40  (35 clean)"),
+    ("Pass rate", "0.98", "0.83", "0.00"),
+    ("Input tokens / task", "343", "82,966", "210,792"),
+    ("Output tokens / task", "205", "1,955", "21,499"),
+    ("LLM calls / task", "2.1", "11.4", "23.6"),
+    ("Tool calls / task", "1.1", "11.2", "13.4"),
+    ("Median task latency", "5.3 s", "92 s", "232 s"),
+    ("Slowest task seen", "62 s", "425 s", "581 s"),
+    ("Model we use", "gpt-5-mini", "claude-sonnet-5", "gemini-2.5-pro"),
+    ("Task pool", "8.5K (HuggingFace)", "114 (retail domain)", "grouped scenarios"),
+], col_w=[inch(3.1), inch(3.1), inch(3.1), inch(3.1)], font=11)
+box(s, inch(0.45), inch(6.05), inch(12.4), inch(0.95),
+    "The scale gap is the headline: a tau2 task costs ~240x the input tokens of a gsm8k task, an "
+    "appworld task ~615x.  A 50-task gsm8k run is minutes; a 20-task appworld run is half an hour "
+    "and millions of tokens.  Budget by benchmark, not by task count.",
+    LTGRAY, STORE, font=12.5, bold=True, font_color=INK)
+
+# ---- what each one is actually for ----
+s = prs.slides.add_slide(BLANK)
+title_band(s, "What Each Benchmark Stresses",
+           "Why all three are in the matrix, and what a result from each does and does not tell you")
+cards = [
+    ("gsm8k", "the canary", WORK, LTTEAL, [
+        "One prompt in, one answer out — no dialogue partner.",
+        "~1 real LLM call + 1 tool call: the simplest agentic loop.",
+        "Stresses almost nothing about the platform — which is the point.",
+        "A failure here means INFRASTRUCTURE: deploy, auth, LLM reach, telemetry.",
+        "Saturated at ~1.0, so it cannot discriminate models. Never read it as one.",
+        "Deterministic enough that task 0 costs 320 input tokens on every cluster —"
+        " we use that to prove two environments are comparable.",
+    ]),
+    ("tau2", "the discriminator", ROSSO, LTPURPLE, [
+        "Multi-turn: a server-side USER SIMULATOR LLM plays the customer.",
+        "Two models talk to each other, plus ~11 tool calls per task.",
+        "Domain is `retail` (114 tasks) — the library default, never recorded in artifacts.",
+        "The only leg where model choice dominates: 0.1 with gpt-5-mini vs 0.9 with"
+        " claude-sonnet-5 on the SAME 10 tasks.",
+        "Episodes are nondeterministic: across 6 samples of the same 10 tasks, 4 flip.",
+        "At n=10 one task moves pass_rate by 0.10 — it cannot resolve less than that.",
+    ]),
+    ("appworld", "the stress test", KC, LTORANGE, [
+        "Realistic chores across simulated apps: discover APIs, chain many calls.",
+        "~24 LLM calls, ~13 tool calls, ~211k input, ~4 min per task.",
+        "Evaluation is PROGRAMMATIC unit tests over final app state — no LLM judge.",
+        "Pass rate 0.0 is the honest result, not a broken platform: runs complete,"
+        " tokens record, the agent just does not finish the job.",
+        "~94% of tasks call `finish` — the agent believes it is done and the"
+        " assertions disagree. A generic agent with no verification pass.",
+        "Its job here is pipeline stress: long contexts, big traces, real timeouts.",
+    ]),
+]
+x = inch(0.45)
+for name, tag, col, lt, bullets in cards:
+    hd = box(s, x, inch(1.30), inch(4.05), inch(0.62), f"{name}  —  {tag}", col, col,
+             font=15, font_color=WHITE)
+    body = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, x, inch(2.02), inch(4.05), inch(3.45))
+    body.fill.solid(); body.fill.fore_color.rgb = lt
+    body.line.color.rgb = col; body.line.width = Pt(1.0); body.shadow.inherit = False
+    tf = body.text_frame; tf.word_wrap = True
+    tf.margin_left = tf.margin_right = Pt(9); tf.margin_top = Pt(8)
+    # A shape's text frame defaults to MIDDLE anchoring and its FIRST paragraph inherits centred
+    # alignment, so bullets floated in the middle of the box with line 1 centred and the rest left.
+    # Both have to be set explicitly, and on every paragraph.
+    tf.vertical_anchor = MSO_ANCHOR.TOP
+    for i, b in enumerate(bullets):
+        para = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        para.alignment = PP_ALIGN.LEFT
+        para.space_after = Pt(6)
+        run = para.add_run(); run.text = "• " + b
+        _set_font(run, 10.5, False, INK)
+    x += inch(4.20)
+
+grid(s, inch(0.45), inch(5.70), inch(12.4), inch(1.45), [
+    ("If you want to \u2026", "use"),
+    ("check a cluster / deploy / auth / telemetry path works", "gsm8k, 1\u201310 tasks"),
+    ("exercise concurrency and volume cheaply", "gsm8k, 50 tasks at max_parallel_sessions=4"),
+    ("compare models meaningfully", "tau2 \u2014 it discriminates; gsm8k saturates at ~1.0"),
+    ("stress long contexts, long tasks, timeouts", "appworld"),
+], col_w=[inch(7.4), inch(5.0)], font=11, first_col_bold=False)
+
+# ---- the traps ----
+s = prs.slides.add_slide(BLANK)
+title_band(s, "Reading the Numbers — Five Things That Mislead",
+           "Every one of these cost us a wrong conclusion first")
+traps = [
+    ("`pass_rate` = evaluated_pass / total",
+     "A task that ERRORS before evaluation counts as not passed, so a low rate can mean "
+     "\u201cfailed the task\u201d or \u201cnever got judged\u201d. Check the error column too."),
+    ("The `llm` column overcounts real calls by one",
+     "Every task issues an extra `max_tokens=1` capability probe, counted as a chat span. "
+     "`llm=2` on gsm8k means ONE real call."),
+    ("Implausibly small tokens = lost telemetry, and `tokens == 0` will not catch it",
+     "When a usage-bearing span is lost, what survives is the probe — whose own usage is 0/0 on "
+     "reasoning models but 8/1 on claude-sonnet-5 and 1/0 on gemini. Use the structural test: "
+     "`llm <= 1` with `tool >= 2` is impossible."),
+    ("Output varies MORE than input, in most runs",
+     "Measured OUT CV > IN CV in 27 of 33 legs. gsm8k's prompt is near-constant while answer "
+     "length swings; only long-horizon appworld inverts it. Do not infer a direction — read the CV."),
+    ("Task selection is deterministic",
+     "A run takes the first `max_tasks` tasks, so the same `task_id` is the same task across runs "
+     "and clusters, and a smaller run is a prefix of a larger one. That is what makes cross-platform "
+     "comparison like-for-like — six legs matched to the byte."),
+]
+y = inch(1.32)
+for i, (head, body_text) in enumerate(traps, 1):
+    b = box(s, inch(0.45), y, inch(12.4), inch(1.02), f"{i}.  {head}", LTORANGE, KC,
+            font=13, bold=True, font_color=INK)
+    b.text_frame.vertical_anchor = MSO_ANCHOR.TOP
+    b.text_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
+    b.text_frame.margin_left = Pt(10); b.text_frame.margin_top = Pt(6)
+    p2 = b.text_frame.add_paragraph(); p2.alignment = PP_ALIGN.LEFT
+    r2 = p2.add_run(); r2.text = body_text
+    _set_font(r2, 11, False, RGBColor(0x3A, 0x46, 0x54))
+    y += inch(1.12)
+
+# ============================================ SLIDE 11: BOUNDARIES
 s = prs.slides.add_slide(BLANK)
 title_band(s, "What the Service Can & Cannot Enact", "The HTTP-only boundary, made explicit")
 
