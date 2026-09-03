@@ -1,6 +1,6 @@
 # Benchmarking Service — Developer Guide
 
-**Last modified:** 2026-09-03T03:00:44Z
+**Last modified:** 2026-09-03T03:22:06Z
 
 > Hand-maintained, unlike the generated `results/12run-*.md` files which stamp themselves. Bump the
 > line above when you edit this guide.
@@ -566,6 +566,36 @@ Drop `--no-deps` only if you also want to run the Service or its test suite from
 fastapi, boto3, pydantic and the MCP/A2A SDKs, none of which the client needs. Keep the venv outside
 a cloud-synced folder (Box/Dropbox/iCloud) — a venv is thousands of small files, and sync tools are
 slow and occasionally destructive with it.
+
+#### Where the source ends up
+
+`<venv>/bin/benchmarking-cli` is **not** the source — it is a generated shim that does
+`from benchmarking_service.cli import main`. Where the real `cli.py` lives depends on how you
+installed, which also decides whether a `git pull` reaches you:
+
+| Install | `cli.py` lives in | Picks up upstream changes? |
+|---|---|---|
+| `uv pip install "…@ git+https://…"` | `<venv>/lib/python3.X/site-packages/benchmarking_service/` (a **copy**, built from one commit) | No — pinned. Re-run with `--reinstall` |
+| `uv pip install -e /path/to/benchmarking` | `/path/to/benchmarking/src/benchmarking_service/` (the clone; only a finder hook is installed) | Yes, immediately |
+| `uv tool install --from /path/to/benchmarking benchmarking-service` | `$(uv tool dir)/benchmarking-service/lib/python3.X/site-packages/benchmarking_service/` | No — reinstall the tool |
+| no install, `PYTHONPATH=<repo>/src python -m benchmarking_service.cli` | the clone itself | Yes, immediately |
+
+Never guess the path — ask the interpreter that is actually running it:
+
+```bash
+python -c "import benchmarking_service.cli as m; print(m.__file__)"
+```
+
+Note that every option installs the **whole distribution**, server modules included (`app.py`,
+`routes/`, `runner/`, `s3_export.py`), because they ship together. With `--no-deps` the client half
+still works while `import benchmarking_service.app` does not — the third-party dependencies were
+skipped, not the files. That the client keeps working is the point, and you can confirm it:
+
+```bash
+python -c "
+import benchmarking_service.cli, sys
+print([m for m in ('fastapi','httpx','boto3','pydantic') if m in sys.modules] or 'no server deps loaded')"
+```
 
 ### 6.0 Run #1 start to finish, on the ykt3 Service driving ykt2 workloads
 
