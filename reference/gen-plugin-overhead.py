@@ -33,6 +33,10 @@ import statistics as st
 import sys
 from datetime import timezone
 
+# Reuse the TOC builder rather than re-deriving GitHub's anchor rules three times over.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from gen_toc import build as _toc  # noqa: E402
+
 SRC = pathlib.Path(sys.argv[1])
 VERSION = sys.argv[2]
 PLATFORM = sys.argv[3]
@@ -150,7 +154,7 @@ L = [f"# AuthBridge plugin overhead — comparative estimate ({PLATFORM})", "",
      f"**Legs compared:** #{BASELINE} (baseline) vs #" + ", #".join(str(n) for n in LEGS[1:]),
      f"  ·  **tasks per leg:** {len(common_sorted)} (`{'`, `'.join(common_sorted)}`)  ",
      f"**Judge-call evidence:** {'included' if judge_ts else '**ABSENT** — see the warning below'}",
-     ""]
+     "", "<!--TOC-->", ""]
 if missing:
     L += [f"> ⚠️ Legs with no mirrored report, excluded: "
           f"{', '.join('#%d' % n for n in missing)}.", ""]
@@ -546,6 +550,7 @@ L += ["",
       "request log, windowed to each leg's run interval.", ""]
 
 doc = "\n".join(L) + "\n"
+doc = doc.replace("<!--TOC-->", _toc(doc))
 if OUT:
     OUT.write_text(doc)
     print(f"wrote {OUT} ({len(doc)} bytes; legs {LEGS}, {len(common_sorted)} tasks, "

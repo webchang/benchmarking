@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regenerate the table of contents in a hand-maintained markdown doc.
 
-Usage: gen-toc.py <file.md> [--check]
+Usage: gen_toc.py <file.md> [--check]
 
 Rewrites whatever sits between the `<!-- toc -->` and `<!-- /toc -->` markers with a nested list of
 the document's `##` / `###` headings and GitHub-style anchors. `--check` exits non-zero instead of
@@ -10,6 +10,10 @@ writing, so CI can catch a TOC that has drifted from the headings.
 A hand-typed TOC in a doc that keeps growing goes stale silently, which is worse than having none —
 hence a generator rather than a one-off edit. Headings inside fenced code blocks are skipped, since
 a `#` there is a shell comment, not a heading.
+
+Importable as well as runnable: the `gen-12run-*.py` / `gen-plugin-overhead.py` generators call
+`build()` directly so their generated documents carry a TOC that cannot drift, since it is rebuilt
+from the finished text every time.
 """
 import pathlib
 import re
@@ -31,7 +35,7 @@ def anchor(heading: str) -> str:
     return h.strip().replace(" ", "-")
 
 
-def headings(text: str) -> list[tuple[int, str]]:
+def headings(text: str, max_level: int = 3) -> list[tuple[int, str]]:
     out, in_fence = [], False
     for line in text.splitlines():
         if line.lstrip().startswith("```"):
@@ -39,17 +43,23 @@ def headings(text: str) -> list[tuple[int, str]]:
             continue
         if in_fence:
             continue
-        m = re.match(r"^(#{2,3}) +(.*?)\s*$", line)
-        if m:
+        m = re.match(r"^(#{2,6}) +(.*?)\s*$", line)
+        if m and len(m.group(1)) <= max_level:
             out.append((len(m.group(1)), m.group(2)))
     return out
 
 
-def build(text: str) -> str:
-    lines = ["**Contents**", ""]
-    for level, title in headings(text):
+def build(text: str, max_level: int = 3, title: str = "**Contents**") -> str:
+    """Render the TOC for `text`.
+
+    `max_level=2` exists for documents whose `###` headings intentionally repeat — the 12-run
+    report titles each per-run subsection identically in its per-task and per-span sections, so
+    listing them would emit duplicate anchors that silently link to the wrong one.
+    """
+    lines = [title, ""]
+    for level, title_text in headings(text, max_level):
         indent = "  " * (level - 2)
-        lines.append(f"{indent}- [{title}](#{anchor(title)})")
+        lines.append(f"{indent}- [{title_text}](#{anchor(title_text)})")
     return "\n".join(lines)
 
 
@@ -70,7 +80,7 @@ def main(argv: list[str]) -> int:
         print(f"{path}: table of contents is up to date")
         return 0
     if check:
-        print(f"{path}: table of contents is STALE — run reference/gen-toc.py {path}",
+        print(f"{path}: table of contents is STALE — run reference/gen_toc.py {path}",
               file=sys.stderr)
         return 1
     path.write_text(new)

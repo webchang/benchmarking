@@ -18,6 +18,7 @@ multi-turn) on the `ykt3` and `kind-rossoctl` clusters.
 **In a hurry?** §2 gets you a token, §6.0 is one benchmark run start to finish as copy-pasteable
 `curl`, and §6.1 is the same thing as a single command.
 
+<!-- Regenerate this list: python3 reference/gen_toc.py docs/DEVELOPER_GUIDE.md -->
 <!-- toc -->
 
 **Contents**

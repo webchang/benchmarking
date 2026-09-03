@@ -19,6 +19,10 @@ VERSION = sys.argv[2]
 PLATFORM = sys.argv[3]
 OUT = pathlib.Path(sys.argv[4]) if len(sys.argv) > 4 else None
 
+# Reuse the TOC builder rather than re-deriving GitHub's anchor rules three times over.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from gen_toc import build as _toc  # noqa: E402
+
 data = json.loads(SRC.read_text())
 runs = sorted(data["runs"], key=lambda r: r["n"])
 
@@ -455,10 +459,13 @@ head = [f"# Benchmarking Service — 12 Parameterized Runs ({PLATFORM})", "",
         f"**Runs executed:** {len(runs)}", "",
         "All numbers below are derived programmatically from the mirrored S3 artifacts "
         "(`report.ndjson` / `token_report.ndjson` / `span_report.ndjson` / `manifest.json`) — none "
-        "are transcribed.", ""]
+        "are transcribed.", "", "<!--TOC-->", ""]
 
 doc = "\n".join(head) + "\n" + "\n\n".join(
     [sec_s3(), S1, S2, sec3(), sec4(), sec5(), sec6(), sec7(), sec8()]) + "\n"
+# Sections only: every `### Run #N` subsection title appears twice (per-task and per-span), so
+# listing level 3 would emit duplicate anchors that link to whichever GitHub saw first.
+doc = doc.replace("<!--TOC-->", _toc(doc, max_level=2))
 if OUT:
     OUT.write_text(doc)
     print(f"wrote {OUT} ({len(doc)} bytes, {len(runs)} runs)")

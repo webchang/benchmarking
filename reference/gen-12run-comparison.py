@@ -11,6 +11,10 @@ import pathlib
 import sys
 from datetime import datetime, timezone
 
+# Reuse the TOC builder rather than re-deriving GitHub's anchor rules three times over.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from gen_toc import build as _toc  # noqa: E402
+
 A, ALAB, B, BLAB, VERSION = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 OUT = pathlib.Path(sys.argv[6]) if len(sys.argv) > 6 else None
 
@@ -147,6 +151,7 @@ L = [f"# 12-Run Comparison — {ALAB} vs {BLAB}, both Service {VERSION}", "",
      "`task_id` is the same task on both platforms — differences are attributable to the platform.",
      "",
      "All numbers are derived from the mirrored `report.ndjson` artifacts.", "",
+     "<!--TOC-->", "",
      s3_section([(ALAB, X), (BLAB, Y)]), "",
      "## Pass rate, wall time, tokens", "",
      f"| # | bench | p | pass {ALAB} | pass {BLAB} | Δ | wall {ALAB} | wall {BLAB} | {BLAB}/{ALAB} | in {ALAB} | in {BLAB} | in Δ |",
@@ -233,6 +238,7 @@ L += ["", "## Totals", "",
       "See `docs/exgentic-agent-bug-report-20260901.md`."]
 
 doc = "\n".join(L) + "\n"
+doc = doc.replace("<!--TOC-->", _toc(doc))
 if OUT:
     OUT.write_text(doc)
     print(f"wrote {OUT} ({len(doc)} bytes)")
