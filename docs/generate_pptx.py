@@ -652,10 +652,10 @@ connector(s, inch(6.72), inch(2.1), inch(6.72), inch(6.4), color=ACCENT, width=1
 s = prs.slides.add_slide(BLANK)
 title_band(s, "The Three Benchmarks — a Difficulty Ladder",
            "Not interchangeable suites: each costs ~an order of magnitude more than the last")
-grid(s, inch(0.45), inch(1.30), inch(12.4), inch(4.55), [
+grid(s, inch(0.45), inch(1.30), inch(12.4), inch(4.35), [
     ("", "gsm8k", "tau2", "appworld"),
     ("What it tests", "multi-step arithmetic", "multi-turn dialogue + tools", "long-horizon app automation"),
-    ("Tasks measured", "172", "60  (50 clean)", "40  (35 clean)"),
+    ("Tasks measured", "172", "60 (50 clean)", "40 (35 clean)"),
     ("Pass rate", "0.98", "0.83", "0.00"),
     ("Input tokens / task", "343", "82,966", "210,792"),
     ("Output tokens / task", "205", "1,955", "21,499"),
@@ -665,12 +665,13 @@ grid(s, inch(0.45), inch(1.30), inch(12.4), inch(4.55), [
     ("Slowest task seen", "62 s", "425 s", "581 s"),
     ("Model we use", "gpt-5-mini", "claude-sonnet-5", "gemini-2.5-pro"),
     ("Task pool", "8.5K (HuggingFace)", "114 (retail domain)", "grouped scenarios"),
-], col_w=[inch(3.1), inch(3.1), inch(3.1), inch(3.1)], font=11)
-box(s, inch(0.45), inch(6.05), inch(12.4), inch(0.95),
+], col_w=[inch(2.5), inch(3.3), inch(3.3), inch(3.3)], font=11)
+_ban = box(s, inch(0.45), inch(6.05), inch(12.4), inch(0.95),
     "The scale gap is the headline: a tau2 task costs ~240x the input tokens of a gsm8k task, an "
-    "appworld task ~615x.  A 50-task gsm8k run is minutes; a 20-task appworld run is half an hour "
-    "and millions of tokens.  Budget by benchmark, not by task count.",
+    "appworld task ~615x. A 50-task gsm8k run is minutes; a 20-task appworld run is half an hour "
+    "and millions of tokens. Budget by benchmark, not by task count.",
     LTGRAY, STORE, font=12.5, bold=True, font_color=INK)
+_ban.text_frame.margin_left = _ban.text_frame.margin_right = Pt(18)
 
 # ---- what each one is actually for ----
 s = prs.slides.add_slide(BLANK)
@@ -689,7 +690,7 @@ cards = [
     ("tau2", "the discriminator", ROSSO, LTPURPLE, [
         "Multi-turn: a server-side USER SIMULATOR LLM plays the customer.",
         "Two models talk to each other, plus ~11 tool calls per task.",
-        "Domain is `retail` (114 tasks) — the library default, never recorded in artifacts.",
+        "Domain is retail (114 tasks) — the library default, never recorded in artifacts.",
         "The only leg where model choice dominates: 0.1 with gpt-5-mini vs 0.9 with"
         " claude-sonnet-5 on the SAME 10 tasks.",
         "Episodes are nondeterministic: across 6 samples of the same 10 tasks, 4 flip.",
@@ -699,10 +700,10 @@ cards = [
         "Realistic chores across simulated apps: discover APIs, chain many calls.",
         "~24 LLM calls, ~13 tool calls, ~211k input, ~4 min per task.",
         "Evaluation is PROGRAMMATIC unit tests over final app state — no LLM judge.",
-        "Pass rate 0.0 is the honest result, not a broken platform: runs complete,"
-        " tokens record, the agent just does not finish the job.",
-        "~94% of tasks call `finish` — the agent believes it is done and the"
-        " assertions disagree. A generic agent with no verification pass.",
+        "Pass rate 0.0 is honest, not broken: runs complete and tokens record —"
+        " the agent just does not finish the job.",
+        "~94% of tasks call finish: it believes it is done and the assertions"
+        " disagree. No verification pass.",
         "Its job here is pipeline stress: long contexts, big traces, real timeouts.",
     ]),
 ]
@@ -713,8 +714,10 @@ for name, tag, col, lt, bullets in cards:
     body = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, x, inch(2.02), inch(4.05), inch(3.45))
     body.fill.solid(); body.fill.fore_color.rgb = lt
     body.line.color.rgb = col; body.line.width = Pt(1.0); body.shadow.inherit = False
+    hd = box(s, x, inch(1.30), inch(3.95), inch(0.62), f"{name} \u2014 {tag}", col, col,
+             font=15, font_color=WHITE)
     tf = body.text_frame; tf.word_wrap = True
-    tf.margin_left = tf.margin_right = Pt(9); tf.margin_top = Pt(8)
+    tf.margin_left = tf.margin_right = Pt(10); tf.margin_top = Pt(30)
     # A shape's text frame defaults to MIDDLE anchoring and its FIRST paragraph inherits centred
     # alignment, so bullets floated in the middle of the box with line 1 centred and the rest left.
     # Both have to be set explicitly, and on every paragraph.
@@ -722,10 +725,10 @@ for name, tag, col, lt, bullets in cards:
     for i, b in enumerate(bullets):
         para = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
         para.alignment = PP_ALIGN.LEFT
-        para.space_after = Pt(6)
+        para.space_after = Pt(5)
         run = para.add_run(); run.text = "• " + b
-        _set_font(run, 10.5, False, INK)
-    x += inch(4.20)
+        _set_font(run, 10, False, INK)
+    x += inch(4.22)
 
 grid(s, inch(0.45), inch(5.70), inch(12.4), inch(1.45), [
     ("If you want to \u2026", "use"),
@@ -740,35 +743,36 @@ s = prs.slides.add_slide(BLANK)
 title_band(s, "Reading the Numbers — Five Things That Mislead",
            "Every one of these cost us a wrong conclusion first")
 traps = [
-    ("`pass_rate` = evaluated_pass / total",
+    ("pass_rate = evaluated_pass / total",
      "A task that ERRORS before evaluation counts as not passed, so a low rate can mean "
      "\u201cfailed the task\u201d or \u201cnever got judged\u201d. Check the error column too."),
-    ("The `llm` column overcounts real calls by one",
-     "Every task issues an extra `max_tokens=1` capability probe, counted as a chat span. "
-     "`llm=2` on gsm8k means ONE real call."),
-    ("Implausibly small tokens = lost telemetry, and `tokens == 0` will not catch it",
+    ("The llm column overcounts real calls by one",
+     "Every task issues an extra max_tokens=1 capability probe, counted as a chat span. "
+     "llm=2 on gsm8k means ONE real call."),
+    ("Implausibly small tokens = lost telemetry, and tokens == 0 will not catch it",
      "When a usage-bearing span is lost, what survives is the probe — whose own usage is 0/0 on "
      "reasoning models but 8/1 on claude-sonnet-5 and 1/0 on gemini. Use the structural test: "
-     "`llm <= 1` with `tool >= 2` is impossible."),
+     "llm <= 1 with tool >= 2 is impossible."),
     ("Output varies MORE than input, in most runs",
      "Measured OUT CV > IN CV in 27 of 33 legs. gsm8k's prompt is near-constant while answer "
      "length swings; only long-horizon appworld inverts it. Do not infer a direction — read the CV."),
     ("Task selection is deterministic",
-     "A run takes the first `max_tasks` tasks, so the same `task_id` is the same task across runs "
+     "A run takes the first max_tasks tasks, so the same task_id is the same task across runs "
      "and clusters, and a smaller run is a prefix of a larger one. That is what makes cross-platform "
      "comparison like-for-like — six legs matched to the byte."),
 ]
 y = inch(1.32)
 for i, (head, body_text) in enumerate(traps, 1):
-    b = box(s, inch(0.45), y, inch(12.4), inch(1.02), f"{i}.  {head}", LTORANGE, KC,
+    b = box(s, inch(0.45), y, inch(12.4), inch(1.00), f"{i}.  {head}", LTORANGE, KC,
             font=13, bold=True, font_color=INK)
     b.text_frame.vertical_anchor = MSO_ANCHOR.TOP
     b.text_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
-    b.text_frame.margin_left = Pt(10); b.text_frame.margin_top = Pt(6)
+    b.text_frame.margin_left = Pt(14); b.text_frame.margin_right = Pt(14)
+    b.text_frame.margin_top = Pt(6)
     p2 = b.text_frame.add_paragraph(); p2.alignment = PP_ALIGN.LEFT
     r2 = p2.add_run(); r2.text = body_text
     _set_font(r2, 11, False, RGBColor(0x3A, 0x46, 0x54))
-    y += inch(1.12)
+    y += inch(1.16)
 
 # ============================================ SLIDE 11: BOUNDARIES
 s = prs.slides.add_slide(BLANK)
