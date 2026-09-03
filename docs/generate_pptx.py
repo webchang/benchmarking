@@ -314,15 +314,8 @@ title_band(s, "2.  Auto-Benchmarking Design Motif",
 box(s, inch(0.4), inch(1.30), inch(2.8), inch(0.85),
     "Benchmarking Client", CLIENT, CLIENT, font=13.5, font_color=WHITE)
 
-sv = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, inch(0.4), inch(2.45), inch(2.8), inch(1.85))
-sv.fill.solid(); sv.fill.fore_color.rgb = BLUE; sv.line.color.rgb = BLUE; sv.shadow.inherit = False
-svtf = sv.text_frame; svtf.word_wrap = True; svtf.vertical_anchor = MSO_ANCHOR.TOP
-svtf.margin_left = Pt(8); svtf.margin_top = Pt(7)
-_p = svtf.paragraphs[0]; _p.alignment = PP_ALIGN.CENTER
-_r = _p.add_run(); _r.text = "Benchmarking Service"; _set_font(_r, 13.5, True, WHITE)
-for _txt in ("deploy the workload", "run the benchmark", "read + export results"):
-    _pp = svtf.add_paragraph(); _pp.alignment = PP_ALIGN.LEFT; _pp.level = 1
-    _rr = _pp.add_run(); _rr.text = "• " + _txt; _set_font(_rr, 11, False, WHITE)
+box(s, inch(0.4), inch(2.45), inch(2.8), inch(1.85),
+    "Benchmarking Service", BLUE, BLUE, font=13.5, font_color=WHITE)
 
 # Both stores widened and their type sized down to carry the longer role-based labels. The "shared
 # sink" subtitle is dropped: the new S3 label already says it.
