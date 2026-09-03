@@ -1,6 +1,6 @@
 # Benchmarking Service — Developer Guide
 
-**Last modified:** 2026-09-03T01:22:20Z
+**Last modified:** 2026-09-03T02:32:37Z
 
 > Hand-maintained, unlike the generated `results/12run-*.md` files which stamp themselves. Bump the
 > line above when you edit this guide.
@@ -42,6 +42,7 @@ multi-turn) on the `ykt3` and `kind-rossoctl` clusters.
   - [5.6 Download output files from S3](#56-download-output-files-from-s3)
   - [5.7 Tear down](#57-tear-down)
 - [6. End-to-end examples (validated flows)](#6-end-to-end-examples-validated-flows)
+  - [What you need on the client side](#what-you-need-on-the-client-side)
   - [6.0 Run #1 start to finish, on the ykt3 Service driving ykt2 workloads](#60-run-1-start-to-finish-on-the-ykt3-service-driving-ykt2-workloads)
   - [6.1 The same thing in one command (`benchmarking-cli`)](#61-the-same-thing-in-one-command-benchmarking-cli)
   - [6.2 Other validated flows](#62-other-validated-flows)
@@ -528,6 +529,44 @@ experiments).
 
 ## 6. End-to-end examples (validated flows)
 
+### What you need on the client side
+
+**Python version.** The client side is deliberately undemanding: §6.0 needs only `curl` plus any
+`python3` for JSON formatting, and `benchmarking-cli` (§6.1) imports nothing beyond the standard
+library. Versions we have actually run:
+
+| Python | Where it was used | Result |
+|---|---|---|
+| **3.12.12** | recommended for a client venv — matches the workload images exactly | ✅ |
+| 3.12.14 | the Service container itself (`FROM python:3.12-slim`) | ✅ |
+| 3.11.14 | the repo's own venv; the declared floor (`requires-python = ">=3.11"`) | ✅ |
+| 3.14.3 | the laptop that drove both 12-run matrices | ✅ |
+
+Anything **≥ 3.11** is fine. 3.12.12 is the tidiest choice because it is exactly what the exgentic
+agent and MCP images run, so your driver matches the workload interpreter — but nothing in the client
+depends on it, and the `curl` path in §6.0 is version-insensitive.
+
+**Do you have to clone the repo?** For **§6.0, no** — it is `curl` and `python3` only, so a token and
+a Service URL are all you need. For **§6.1** you need the package that provides the
+`benchmarking-cli` entry point, but a manual clone is still optional: the repository is public, so
+install it straight from git.
+
+```bash
+# No clone. Client only: --no-deps, because the CLI is stdlib-only and pulls in nothing else.
+uv venv --python 3.12.12 && source .venv/bin/activate
+uv pip install "benchmarking-service @ git+https://github.com/webchang/benchmarking" --no-deps
+
+# Already have a clone? Point at the repo, NOT at `.` — `-e .` looks for pyproject.toml in the
+# CURRENT directory, so running it from a scratch/testbed folder fails with
+# "does not appear to be a Python project".
+uv pip install -e /path/to/benchmarking --no-deps        # -e: git pull updates the CLI in place
+```
+
+Drop `--no-deps` only if you also want to run the Service or its test suite from that venv; it adds
+fastapi, boto3, pydantic and the MCP/A2A SDKs, none of which the client needs. Keep the venv outside
+a cloud-synced folder (Box/Dropbox/iCloud) — a venv is thousands of small files, and sync tools are
+slow and occasionally destructive with it.
+
 ### 6.0 Run #1 start to finish, on the ykt3 Service driving ykt2 workloads
 
 Run #1 of the canonical matrix: gsm8k, 1 task, no gateway, no plugins. Every command below was
@@ -658,7 +697,8 @@ export BM_PASSWORD_FILE="$HOME/.rossoctl-ykt3/benchmarker.pass"     # chmod 600
 export BM_INSECURE=1
 export BM_CARD_TEMPLATE="https://{service}-{namespace}.apps.ykt2.hcp.res.ibm.com/.well-known/agent-card.json"
 
-pip install -e .        # or: uv pip install -e .   — provides the benchmarking-cli entry point
+# See "What you need on the client side" above for install options; the shortest is:
+#   uv pip install "benchmarking-service @ git+https://github.com/webchang/benchmarking" --no-deps
 benchmarking-cli all --benchmark gsm8k --tasks 1 --timeout 120 --mirror /tmp/benchmarking
 ```
 
