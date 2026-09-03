@@ -52,6 +52,7 @@ import json
 import os
 import pathlib
 import ssl
+import stat as statmod
 import sys
 import time
 import urllib.error
@@ -268,7 +269,31 @@ def do_artifacts(c: Client, a, run_id: str) -> dict:
                 (dest / art["name"]).write_bytes(blob)
                 got += 1
         log(f"mirrored {got}/{len(arts)} -> {dest}")
+        _listing(dest)
     return state
+
+
+def _listing(dest: pathlib.Path) -> None:
+    """Show what actually landed on disk, `ls -l` style, and end with a copy-pasteable `cd`.
+
+    Printed rather than left to the reader because the mirror path is absolute and deeply nested:
+    retyping it relative to the current directory is the obvious mistake, and the file sizes are
+    the quickest confirmation that nothing arrived truncated.
+    """
+    try:
+        files = sorted(p for p in dest.iterdir() if p.is_file())
+    except OSError as exc:
+        log(f"  (could not list {dest}: {exc})")
+        return
+    total = 0
+    for f in files:
+        st = f.stat()
+        total += st.st_size
+        print("  %s %9d  %s  %s" % (statmod.filemode(st.st_mode), st.st_size,
+                                    time.strftime("%b %d %H:%M", time.localtime(st.st_mtime)),
+                                    f.name))
+    print(f"  {len(files)} files, {total:,} bytes")
+    print(f"\n  cd {dest}")
 
 
 def summarize(state: dict) -> None:

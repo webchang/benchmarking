@@ -1,6 +1,6 @@
 # Benchmarking Service — Developer Guide
 
-**Last modified:** 2026-09-03T02:32:37Z
+**Last modified:** 2026-09-03T03:00:44Z
 
 > Hand-maintained, unlike the generated `results/12run-*.md` files which stamp themselves. Bump the
 > line above when you edit this guide.
@@ -712,10 +712,26 @@ Which prints, for the run above:
   json           468  https://rossoctl-benchmarking.s3.us-east-1.amazonaws.com/.../run.json
   ...
 [17:56:39] mirrored 8/8 -> /tmp/benchmarking/ykt3-to-ykt2/.../20260902215628-79e0713a
+  -rw-r--r--      3002  Sep 02 17:56  manifest.json
+  -rw-r--r--      1035  Sep 02 17:56  report.ndjson
+  -rw-r--r--     11984  Sep 02 17:56  report.parquet
+  -rw-r--r--       468  Sep 02 17:56  run.json
+  -rw-r--r--     52578  Sep 02 17:56  span_report.ndjson
+  -rw-r--r--     10878  Sep 02 17:56  span_report.parquet
+  -rw-r--r--       371  Sep 02 17:56  token_report.ndjson
+  -rw-r--r--      4425  Sep 02 17:56  token_report.parquet
+  8 files, 84,741 bytes
+
+  cd /tmp/benchmarking/ykt3-to-ykt2/.../20260902215628-79e0713a
+
   status      succeeded
   pass_rate   1.0   (1/1)
   wall        5s
 ```
+
+The trailing `cd` is there because the mirror path is absolute and deeply nested — retyping it
+relative to your current directory is the easy mistake. The sizes are also the quickest check that
+nothing arrived truncated. Feed that directory straight into §6.0 step 7 to analyse the run.
 
 Each step is also a subcommand, so the CLI doubles as a way to see one HTTP call at a time:
 
@@ -727,7 +743,7 @@ benchmarking-cli wait      --benchmark gsm8k             # stability + card gate
 benchmarking-cli run       --benchmark gsm8k --tasks 1    # prints the run_id
 benchmarking-cli poll      --benchmark gsm8k --run "$RUN"
 benchmarking-cli report    --benchmark gsm8k --run "$RUN" # GET …/report (needs MLflow)
-benchmarking-cli artifacts --benchmark gsm8k --run "$RUN" --mirror /tmp/benchmarking
+benchmarking-cli artifacts --benchmark gsm8k --run "$RUN" --mirror /tmp/benchmarking  # + ls -l
 benchmarking-cli teardown  --benchmark gsm8k
 ```
 
