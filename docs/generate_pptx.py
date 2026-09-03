@@ -205,22 +205,30 @@ items = [
     ("The two-token auth model", "why the caller's token is never forwarded upstream"),
     ("Benchmark catalog & run lifecycle", "the three benchmarks and the REST flow that drives them"),
     ("The three benchmarks — what they measure",
-     "6.1 a difficulty ladder · 6.2 what each stresses · 6.3 how to read the numbers"),
+     "6.1 the difficulty ladder · 6.2 what each stresses · 6.3 the traps"),
     ("What the Service can & cannot enact", "the HTTP-only boundary, made explicit"),
 ]
-y = inch(1.35)
-for i, (head, sub) in enumerate(items, 1):
-    chip = s.shapes.add_shape(MSO_SHAPE.OVAL, inch(0.75), y + inch(0.07), inch(0.42), inch(0.42))
+# Two columns: a single column left ~54% of a 16:9 canvas empty. Split 4 + 3 and set the row pitch
+# so the taller column reaches roughly the same depth as the content on the other slides.
+SPLIT = 4
+COLS = ((inch(0.75), inch(1.40), inch(4.95)), (inch(7.10), inch(7.75), inch(5.10)))
+for idx, (head, sub) in enumerate(items):
+    col = 0 if idx < SPLIT else 1
+    row = idx if col == 0 else idx - SPLIT
+    chip_x, text_x, text_w = COLS[col]
+    y = inch(1.55) + row * inch(1.18)
+    chip = s.shapes.add_shape(MSO_SHAPE.OVAL, chip_x, y + inch(0.06), inch(0.46), inch(0.46))
     chip.fill.solid(); chip.fill.fore_color.rgb = ACCENT
     chip.line.color.rgb = WHITE; chip.line.width = Pt(1.25); chip.shadow.inherit = False
     ctf = chip.text_frame; ctf.margin_left = ctf.margin_right = 0
     ctf.margin_top = ctf.margin_bottom = 0
     cp = ctf.paragraphs[0]; cp.alignment = PP_ALIGN.CENTER
-    cr = cp.add_run(); cr.text = str(i); _set_font(cr, 13, True, WHITE)
-    textbox(s, inch(1.40), y, inch(11.3), inch(0.30), [(head, 16, True, NAVY)])
-    textbox(s, inch(1.40), y + inch(0.30), inch(11.3), inch(0.28),
-            [(sub, 12, False, RGBColor(0x3A, 0x46, 0x54))])
-    y += inch(0.72)
+    cr = cp.add_run(); cr.text = str(idx + 1); _set_font(cr, 14, True, WHITE)
+    textbox(s, text_x, y, text_w, inch(0.32), [(head, 17, True, NAVY)])
+    textbox(s, text_x, y + inch(0.33), text_w, inch(0.50),
+            [(sub, 12.5, False, RGBColor(0x3A, 0x46, 0x54))])
+# a hairline between the columns, so the split reads as deliberate structure
+connector(s, inch(6.65), inch(1.50), inch(6.65), inch(5.75), color=BORDER, width=1.0, arrow=False)
 
 # ================================================ SLIDE 3: OVERVIEW + DECISIONS
 s = prs.slides.add_slide(BLANK)
