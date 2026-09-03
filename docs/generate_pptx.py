@@ -4,14 +4,19 @@ Run with the project env plus python-pptx (no need to add it as a project dep):
 
     uv run --with python-pptx python docs/generate_pptx.py
 
-Produces an 11-slide 16:9 deck: title, agenda, overview + key design decisions, two
+Produces a 15-slide 16:9 deck: title, agenda, overview + key design decisions, two
 architecture diagrams (the whole system, then inside the workload), the two-token auth
-model, the benchmark catalog + run lifecycle, three benchmark slides, and the
+model, the benchmark catalog + run lifecycle, three benchmark slides, four results slides
+(the 12-run matrix, what it measured, OpenShift vs KinD, AuthBridge overhead), and the
 enact/report boundaries.
 
-Content is sourced from docs/SERVICE_DESIGN_DECISIONS.md and docs/BENCHMARKS_PRIMER.md;
-every measured figure on the benchmark slides comes from our own runs over rows with
-intact telemetry, not from the benchmarks' published papers.
+Content is sourced from docs/SERVICE_DESIGN_DECISIONS.md, docs/BENCHMARKS_PRIMER.md and the
+generated results/12run-*.md documents. Every measured figure comes from our own runs -- the
+benchmark slides over rows with intact telemetry, the results slides from the v1.24 matrices'
+mirrored artifacts -- not from the benchmarks' published papers.
+
+Slide titles carry their agenda number, so keep the agenda list and the title_band() prefixes
+in step when adding or reordering slides.
 """
 
 from pptx import Presentation
@@ -206,17 +211,21 @@ items = [
     ("Benchmark catalog & run lifecycle", "the three benchmarks and the REST flow that drives them"),
     ("The three benchmarks — what they measure",
      "6.1 the difficulty ladder · 6.2 what each stresses · 6.3 the traps"),
+    ("The canonical 12-run matrix",
+     "7.1 what the 12 runs parameterize · 7.2 what they measured"),
+    ("Cross-platform & plugin overhead",
+     "8.1 OpenShift vs KinD, like-for-like · 8.2 what AuthBridge costs"),
     ("What the Service can & cannot enact", "the HTTP-only boundary, made explicit"),
 ]
 # Two columns: a single column left ~54% of a 16:9 canvas empty. Split 4 + 3 and set the row pitch
 # so the taller column reaches roughly the same depth as the content on the other slides.
-SPLIT = 4
+SPLIT = 5
 COLS = ((inch(0.75), inch(1.40), inch(4.95)), (inch(7.10), inch(7.75), inch(5.10)))
 for idx, (head, sub) in enumerate(items):
     col = 0 if idx < SPLIT else 1
     row = idx if col == 0 else idx - SPLIT
     chip_x, text_x, text_w = COLS[col]
-    y = inch(1.55) + row * inch(1.18)
+    y = inch(1.45) + row * inch(1.06)
     chip = s.shapes.add_shape(MSO_SHAPE.OVAL, chip_x, y + inch(0.06), inch(0.46), inch(0.46))
     chip.fill.solid(); chip.fill.fore_color.rgb = ACCENT
     chip.line.color.rgb = WHITE; chip.line.width = Pt(1.25); chip.shadow.inherit = False
@@ -228,7 +237,7 @@ for idx, (head, sub) in enumerate(items):
     textbox(s, text_x, y + inch(0.33), text_w, inch(0.50),
             [(sub, 12.5, False, RGBColor(0x3A, 0x46, 0x54))])
 # a hairline between the columns, so the split reads as deliberate structure
-connector(s, inch(6.65), inch(1.50), inch(6.65), inch(5.75), color=BORDER, width=1.0, arrow=False)
+connector(s, inch(6.65), inch(1.40), inch(6.65), inch(6.05), color=BORDER, width=1.0, arrow=False)
 
 # ================================================ SLIDE 3: OVERVIEW + DECISIONS
 s = prs.slides.add_slide(BLANK)
@@ -782,9 +791,174 @@ for i, (head, body_text) in enumerate(traps, 1):
     _set_font(r2, 11, False, RGBColor(0x3A, 0x46, 0x54))
     y += inch(1.16)
 
-# ============================================ SLIDE 11: BOUNDARIES
+
+# ============================ SLIDES 12-15: THE 12-RUN MATRIX AND WHAT IT SHOWED
+# Every figure is read from the v1.24 matrices' own mirrored artifacts (results/12run-*.md).
 s = prs.slides.add_slide(BLANK)
-title_band(s, "7.  What the Service Can & Cannot Enact", "The HTTP-only boundary, made explicit")
+title_band(s, "7.1  The Canonical 12-Run Matrix",
+           "One fixed set of 12 request bodies — the same on every platform, every version")
+grid(s, inch(0.45), inch(1.30), inch(12.4), inch(3.95), [
+    ("#", "benchmark", "tasks", "parallel", "what it varies"),
+    ("1", "gsm8k", "1", "1", "baseline — the smoke test"),
+    ("2", "gsm8k", "10", "1", "volume, still serial"),
+    ("3", "gsm8k", "50", "4", "volume + concurrency"),
+    ("4", "gsm8k", "5", "4", "model swap → Azure/gpt-4.1"),
+    ("5", "gsm8k", "5", "4", "AuthBridge preset: auth-only"),
+    ("6", "gsm8k", "5", "4", "AuthBridge preset: ibac-only"),
+    ("7", "gsm8k", "5", "4", "AuthBridge preset: full (enforce)"),
+    ("8", "gsm8k", "5", "4", "full + per-plugin override ibac:observe"),
+    ("9", "tau2", "10", "1", "multi-turn + user simulator"),
+    ("10", "tau2", "20", "4", "multi-turn under concurrency"),
+    ("11", "appworld", "5", "1", "long-horizon, gemini-2.5-pro"),
+    ("12", "appworld", "20", "4", "long-horizon under concurrency"),
+], col_w=[inch(0.7), inch(1.7), inch(1.0), inch(1.2), inch(7.8)], font=10.5,
+   first_col_bold=False)
+_m = box(s, inch(0.45), inch(5.45), inch(12.4), inch(1.55),
+    "Why a FIXED matrix: task selection is deterministic, so the same leg run anywhere executes the "
+    "same tasks in the same order. That is what makes a difference attributable to the platform "
+    "rather than to the workload — and it is why every leg deploys fresh, since reusing a warm agent "
+    "silently loses telemetry. Driven by one command (reference/run-12.py, ~1h55m); the three "
+    "generated documents in results/ derive every number from the mirrored artifacts.",
+    LTGRAY, STORE, font=12, bold=False, font_color=INK)
+_m.text_frame.margin_left = _m.text_frame.margin_right = Pt(18)
+
+# ---- 7.2 what it measured ----
+s = prs.slides.add_slide(BLANK)
+title_band(s, "7.2  What the 12 Runs Measured",
+           "v1.24 on OpenShift (Service on ykt3, workloads on ykt2) — 138 tasks, all 12 legs succeeded")
+grid(s, inch(0.45), inch(1.30), inch(6.05), inch(4.15), [
+    ("#", "bench", "pass", "wall", "input tokens"),
+    ("1", "gsm8k", "1.00", "9 s", "320"),
+    ("2", "gsm8k", "1.00", "42 s", "3,166"),
+    ("3", "gsm8k", "1.00", "97 s", "15,684"),
+    ("4", "gsm8k", "0.80", "26 s", "3,613"),
+    ("5", "gsm8k", "1.00", "31 s", "1,564"),
+    ("6", "gsm8k", "1.00", "35 s", "1,564"),
+    ("7", "gsm8k", "1.00", "32 s", "1,564"),
+    ("8", "gsm8k", "1.00", "30 s", "1,564"),
+    ("9", "tau2", "0.70", "780 s", "852,240"),
+    ("10", "tau2", "0.85", "425 s", "1,550,718"),
+    ("11", "appworld", "0.00", "2164 s", "1,988,986"),
+    ("12", "appworld", "0.00", "1769 s", "4,009,033"),
+], col_w=[inch(0.6), inch(1.5), inch(1.0), inch(1.15), inch(1.8)], font=10.5,
+   first_col_bold=False)
+notes = [
+    ("All eight gsm8k legs pass", "1.00 everywhere except #4, where ONE task of five fails on the "
+     "gpt-4.1 swap. The four AuthBridge presets do not change the result — only the latency."),
+    ("tau2 is the only leg that moves", "0.70 and 0.85. Across six samples of the same 10 tasks, four "
+     "flip: at n=10 one task is worth 0.10, so this cannot resolve less than that."),
+    ("appworld 0.00 is the honest result", "Runs complete, tokens record, evaluation says the goal "
+     "was not met. ~94% of tasks self-declare finish."),
+    ("Token attribution complete: 0 of 138 rows lost", "The previous matrix had 15 damaged rows that a "
+     "tokens == 0 check reported as clean. Fresh deploy per leg, plus a structural detector."),
+    ("8.4M input / 674k output tokens", "over 5,438 s of wall time — appworld alone is 71% of the "
+     "input, on 25 of 138 tasks."),
+]
+y = inch(1.30)
+for head, body_text in notes:
+    b = box(s, inch(6.75), y, inch(6.10), inch(0.80), head, LTBLUE, BLUE, font=12,
+            bold=True, font_color=INK)
+    b.text_frame.vertical_anchor = MSO_ANCHOR.TOP
+    b.text_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
+    b.text_frame.margin_left = Pt(10); b.text_frame.margin_top = Pt(5)
+    p2 = b.text_frame.add_paragraph(); p2.alignment = PP_ALIGN.LEFT
+    r2 = p2.add_run(); r2.text = body_text
+    _set_font(r2, 10, False, RGBColor(0x3A, 0x46, 0x54))
+    y += inch(0.86)
+
+
+# ---- 8.1 cross-platform ----
+s = prs.slides.add_slide(BLANK)
+title_band(s, "8.1  OpenShift vs KinD — Like-for-Like",
+           "Same 12 request bodies, same Service version, verified-identical instance config")
+grid(s, inch(0.45), inch(1.30), inch(7.55), inch(4.20), [
+    ("#", "bench", "pass OCP", "pass KinD", "in OCP", "in KinD", ""),
+    ("1", "gsm8k", "1.00", "1.00", "320", "320", "identical"),
+    ("2", "gsm8k", "1.00", "1.00", "3,166", "3,166", "identical"),
+    ("3", "gsm8k", "1.00", "1.00", "15,684", "15,684", "identical"),
+    ("4", "gsm8k", "0.80", "0.80", "3,613", "4,184", ""),
+    ("5", "gsm8k", "1.00", "1.00", "1,564", "1,564", "identical"),
+    ("6", "gsm8k", "1.00", "1.00", "1,564", "1,564", "identical"),
+    ("7", "gsm8k", "1.00", "1.00", "1,564", "1,564", "identical"),
+    ("8", "gsm8k", "1.00", "1.00", "1,564", "1,564", "identical"),
+    ("9", "tau2", "0.70", "0.70", "852,240", "847,530", ""),
+    ("10", "tau2", "0.85", "0.80", "1,550,718", "1,552,641", ""),
+    ("11", "appworld", "0.00", "0.00", "1,988,986", "1,150,541", ""),
+    ("12", "appworld", "0.00", "0.00", "4,009,033", "3,646,292", ""),
+], col_w=[inch(0.55), inch(1.25), inch(0.95), inch(1.0), inch(1.35), inch(1.35), inch(1.1)],
+   font=10, first_col_bold=False)
+find = [
+    ("11 of 12 pass rates identical", "Only #10 differs, by one task of twenty (0.85 vs 0.80) — and "
+     "tau2 is the leg we know flips run to run on either platform."),
+    ("7 legs byte-identical on input tokens", "320 / 3,166 / 15,684 / 1,564 x4. Deterministic task "
+     "selection plus the same model means identical work — the strongest available proof this is a "
+     "like-for-like comparison, not merely a similar one."),
+    ("Wall time is a dead heat", "5,438 s on OpenShift vs 5,429 s on a single KinD node — 0.2% apart "
+     "in total, though individual legs differ by up to 8x."),
+    ("0 lost-attribution rows on both sides", "138 OCP tasks, 135 KinD tasks."),
+    ("So the platform is not the variable", "Where the two differ it traces to episode "
+     "nondeterminism (tau2), small samples (#4 = one task), or appworld task timeouts — not to "
+     "OpenShift vs KinD."),
+]
+y = inch(1.30)
+for head, body_text in find:
+    b = box(s, inch(8.25), y, inch(4.60), inch(0.80), head, LTTEAL, WORK, font=11.5,
+            bold=True, font_color=INK)
+    b.text_frame.vertical_anchor = MSO_ANCHOR.TOP
+    b.text_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
+    b.text_frame.margin_left = Pt(10); b.text_frame.margin_top = Pt(5)
+    p2 = b.text_frame.add_paragraph(); p2.alignment = PP_ALIGN.LEFT
+    r2 = p2.add_run(); r2.text = body_text
+    _set_font(r2, 9.5, False, RGBColor(0x3A, 0x46, 0x54))
+    y += inch(0.86)
+
+# ---- 8.2 plugin overhead ----
+s = prs.slides.add_slide(BLANK)
+title_band(s, "8.2  What AuthBridge Costs",
+           "Legs #3 and #5–8 ran byte-identical work, so latency differences are the plugin config")
+grid(s, inch(0.45), inch(1.30), inch(6.35), inch(1.90), [
+    ("component", "cost", "measured from"),
+    ("Sidecar present at all", "~+9.5 s / task (OCP)", "flat across all four presets"),
+    ("Tool call, sidecar but unjudged", "+0.50 s", "auth-only"),
+    ("Tool call, judged", "+1.96 s on top", "full + observe (all 5 judged)"),
+], col_w=[inch(2.6), inch(1.85), inch(1.90)], font=10.5)
+grid(s, inch(0.45), inch(3.55), inch(6.35), inch(1.90), [
+    ("", "OCP", "KinD", "ratio"),
+    ("connect_mcp with sidecar", "3131 ms", "168 ms", "18.6x"),
+    ("tool call, unjudged", "545 ms", "13 ms", "41.1x"),
+    ("tool call, judged", "2507 ms", "1167 ms", "2.1x"),
+], col_w=[inch(2.6), inch(1.25), inch(1.25), inch(1.25)], font=10.5)
+pts = [
+    ("The judge is itself an LLM call", "The sidecar POSTs to a chat-completions endpoint per "
+     "authorized action, which is why it costs seconds and why its latency is so variable."),
+    ("Most of the OCP figure is topology, not plugins",
+     "The judged-call cost is comparable across platforms (2.1x) because it is dominated by a shared "
+     "external gateway. The fixed cost is 8x apart because this OCP matrix is cross-cluster — "
+     "token exchange over external routes. Do NOT quote +9.5 s as \u201cthe cost of AuthBridge\u201d; "
+     "the single-node figures (~+1.2 s fixed, ~+1.1 s per judged call) are the better estimate."),
+    ("Presets cannot be ranked from these numbers",
+     "Only 1 of 6 IBAC legs authorized all of its tool calls: OCP judged 4/5, 3/5, 5/5 and KinD "
+     "3/5, 4/5, 3/5. A leg that judged fewer calls shows a lower median — a mixture, not a saving. "
+     "Whether that is decision caching under concurrency or a fail-open gap is still OPEN; the test "
+     "is one ibac-only leg at parallelism 1."),
+    ("Latency only", "The sidecar's CPU and memory cost is unmeasured — every infra field in these "
+     "runs is 0.0."),
+]
+y = inch(1.30)
+for head, body_text in pts:
+    b = box(s, inch(7.05), y, inch(5.80), inch(1.30), head, LTPURPLE, ROSSO, font=11.5,
+            bold=True, font_color=INK)
+    b.text_frame.vertical_anchor = MSO_ANCHOR.TOP
+    b.text_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
+    b.text_frame.margin_left = Pt(10); b.text_frame.margin_top = Pt(5)
+    p2 = b.text_frame.add_paragraph(); p2.alignment = PP_ALIGN.LEFT
+    r2 = p2.add_run(); r2.text = body_text
+    _set_font(r2, 9.5, False, RGBColor(0x3A, 0x46, 0x54))
+    y += inch(1.36)
+
+# ============================================ SLIDE 16: BOUNDARIES
+s = prs.slides.add_slide(BLANK)
+title_band(s, "9.  What the Service Can & Cannot Enact", "The HTTP-only boundary, made explicit")
 
 box(s, inch(0.5), inch(1.35), inch(5.9), inch(0.5), "✓  Enacts over HTTP", CLIENT, CLIENT,
     font=15, font_color=WHITE, shape=MSO_SHAPE.RECTANGLE)
