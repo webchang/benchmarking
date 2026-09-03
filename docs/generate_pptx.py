@@ -4,7 +4,8 @@ Run with the project env plus python-pptx (no need to add it as a project dep):
 
     uv run --with python-pptx python docs/generate_pptx.py
 
-Produces a 15-slide 16:9 deck: title, agenda, overview + key design decisions, two
+Produces a 16-slide 16:9 deck: title, agenda, overview + key design decisions, the
+design motif, two
 architecture diagrams (the whole system, then inside the workload), the two-token auth
 model, the benchmark catalog + run lifecycle, three benchmark slides, four results slides
 (the 12-run matrix, what it measured, OpenShift vs KinD, AuthBridge overhead), and the
@@ -185,6 +186,18 @@ def grid(slide, x, y, w, h, rows, col_w, head_fill=NAVY, head_color=WHITE, font=
     return tbl
 
 
+def dot(cx, cy, n):
+    """Numbered badge on the CURRENT slide -- reads the module-level `s`, so it must be called
+    after `s` is rebound to the slide being drawn."""
+    dia = 0.26 if len(str(n)) < 2 else 0.34  # widen for 2-digit numbers so they don't wrap
+    d = s.shapes.add_shape(MSO_SHAPE.OVAL, int(cx) - inch(dia / 2), int(cy) - inch(dia / 2), inch(dia), inch(dia))
+    d.fill.solid(); d.fill.fore_color.rgb = ACCENT; d.line.color.rgb = WHITE; d.line.width = Pt(1)
+    d.shadow.inherit = False
+    tf = d.text_frame; tf.word_wrap = False
+    tf.margin_left = 0; tf.margin_right = 0; tf.margin_top = 0; tf.margin_bottom = 0
+    p = tf.paragraphs[0]; p.alignment = PP_ALIGN.CENTER
+    r = p.add_run(); r.text = str(n); _set_font(r, 10.5, True, WHITE)
+
 # ============================================================ SLIDE 1: TITLE
 s = prs.slides.add_slide(BLANK)
 bg = s.shapes.add_shape(MSO_SHAPE.RECTANGLE, 0, 0, SW, SH)
@@ -204,28 +217,30 @@ s = prs.slides.add_slide(BLANK)
 title_band(s, "Agenda", "What this deck covers, in order")
 items = [
     ("Overview & key design decisions", "what the Service is, and the seven choices that shape it"),
+    ("Auto-benchmarking design motif",
+     "the shape of the system, before the wiring detail"),
     ("Architecture", "client, Service, and the per-cluster instance selected by JWT iss"),
     ("Architecture with workload specific components",
      "inside the workload: sidecar, user simulator, IBAC judge"),
     ("The two-token auth model", "why the caller's token is never forwarded upstream"),
     ("Benchmark catalog & run lifecycle", "the three benchmarks and the REST flow that drives them"),
     ("The three benchmarks — what they measure",
-     "6.1 the difficulty ladder · 6.2 what each stresses · 6.3 the traps"),
+     "7.1 the difficulty ladder · 7.2 what each stresses · 7.3 the traps"),
     ("The canonical 12-run matrix",
-     "7.1 what the 12 runs parameterize · 7.2 what they measured"),
+     "8.1 what the 12 runs parameterize · 8.2 what they measured"),
     ("Cross-platform & plugin overhead",
-     "8.1 OpenShift vs KinD, like-for-like · 8.2 what AuthBridge costs"),
+     "9.1 OpenShift vs KinD, like-for-like · 9.2 what AuthBridge costs"),
     ("What the Service can & cannot enact", "the HTTP-only boundary, made explicit"),
 ]
 # Two columns: a single column left ~54% of a 16:9 canvas empty. Split 4 + 3 and set the row pitch
 # so the taller column reaches roughly the same depth as the content on the other slides.
-SPLIT = 5
+SPLIT = 5  # 10 items, five per column
 COLS = ((inch(0.75), inch(1.40), inch(4.95)), (inch(7.10), inch(7.75), inch(5.10)))
 for idx, (head, sub) in enumerate(items):
     col = 0 if idx < SPLIT else 1
     row = idx if col == 0 else idx - SPLIT
     chip_x, text_x, text_w = COLS[col]
-    y = inch(1.45) + row * inch(1.06)
+    y = inch(1.42) + row * inch(1.04)
     chip = s.shapes.add_shape(MSO_SHAPE.OVAL, chip_x, y + inch(0.06), inch(0.46), inch(0.46))
     chip.fill.solid(); chip.fill.fore_color.rgb = ACCENT
     chip.line.color.rgb = WHITE; chip.line.width = Pt(1.25); chip.shadow.inherit = False
@@ -287,9 +302,99 @@ for head, body in decisions:
     _set_font(r2, 10.5, False, RGBColor(0x3A, 0x46, 0x54))
     y += inch(0.70)
 
-# ================================================== SLIDE 4: ARCHITECTURE
+
+# ============================ SLIDE 4: AUTO-BENCHMARKING DESIGN MOTIF
+# The conceptual shape, ahead of the wiring detail on the next slide: who talks to whom, and where
+# results land. Deliberately omits Keycloak (auth has its own slide), the workload's internals (the
+# slide after next), and anything cluster-specific.
 s = prs.slides.add_slide(BLANK)
-title_band(s, "2.  Architecture", "Relations between client, service, cluster-specific Keycloak / Rossoctl / workload, MLflow & S3")
+title_band(s, "2.  Auto-Benchmarking Design Motif",
+           "One client, one Service, N workload deployments — and every result ends up in one place")
+
+box(s, inch(0.4), inch(1.30), inch(2.8), inch(0.85),
+    "Benchmarking Client", CLIENT, CLIENT, font=13.5, font_color=WHITE,
+    sub="off-cluster (host / CI)", sub_color=RGBColor(0xE6, 0xF0, 0xE6))
+
+sv = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, inch(0.4), inch(2.45), inch(2.8), inch(1.85))
+sv.fill.solid(); sv.fill.fore_color.rgb = BLUE; sv.line.color.rgb = BLUE; sv.shadow.inherit = False
+svtf = sv.text_frame; svtf.word_wrap = True; svtf.vertical_anchor = MSO_ANCHOR.TOP
+svtf.margin_left = Pt(8); svtf.margin_top = Pt(7)
+_p = svtf.paragraphs[0]; _p.alignment = PP_ALIGN.CENTER
+_r = _p.add_run(); _r.text = "Benchmarking Service"; _set_font(_r, 13.5, True, WHITE)
+for _txt in ("deploy the workload", "run the benchmark", "read + export results"):
+    _pp = svtf.add_paragraph(); _pp.alignment = PP_ALIGN.LEFT; _pp.level = 1
+    _rr = _pp.add_run(); _rr.text = "• " + _txt; _set_font(_rr, 11, False, WHITE)
+
+box(s, inch(0.4), inch(4.75), inch(1.35), inch(0.95), "S3", STORE, ACCENT,
+    font=13, font_color=WHITE, sub="shared sink", sub_color=LTGRAY)
+box(s, inch(1.85), inch(4.75), inch(1.35), inch(0.95), "MLflow", STORE, STORE,
+    font=13, font_color=WHITE, sub="traces", sub_color=LTGRAY)
+
+# the instances container — stacked shadow implies "many of these"
+CX3, CY3, CW3, CH3 = inch(4.05), inch(1.2), inch(8.75), inch(4.35)
+for _off, _col in ((inch(0.16), RGBColor(0xF0, 0xF1, 0xF3)), (inch(0.08), RGBColor(0xE3, 0xE5, 0xE8))):
+    _sh = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, CX3 + _off, CY3 + _off, CW3, CH3)
+    _sh.fill.solid(); _sh.fill.fore_color.rgb = _col
+    _sh.line.fill.background(); _sh.shadow.inherit = False
+_c3 = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, CX3, CY3, CW3, CH3)
+_c3.fill.solid(); _c3.fill.fore_color.rgb = RGBColor(0xFB, 0xFC, 0xFD)
+_c3.line.color.rgb = NAVY; _c3.line.width = Pt(1.5)
+_c3.line._get_or_add_ln().append(
+    _c3.line._get_or_add_ln().makeelement(qn("a:prstDash"), {"val": "dash"}))
+_c3.shadow.inherit = False
+textbox(s, inch(4.25), inch(1.30), inch(8.4), inch(0.4),
+        [("Workload Deployment Instances", 13, True, NAVY)])
+
+# The full name on one label, not split title/sub: "Benchmark workload" alone as a heading collided
+# visually with the "Benchmark Workload" box to its right.
+box(s, inch(4.35), inch(2.60), inch(2.55), inch(1.35),
+    "Benchmark workload deployment helper", ROSSO, ROSSO, font=12.5, font_color=WHITE,
+    sub="creates the MCP tool + A2A agent", sub_color=LTPURPLE)
+
+_wg = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, inch(9.15), inch(2.30), inch(3.45), inch(1.60))
+_wg.fill.solid(); _wg.fill.fore_color.rgb = LTTEAL
+_wg.line.color.rgb = WORK; _wg.line.width = Pt(1.25); _wg.shadow.inherit = False
+_wtf = _wg.text_frame; _wtf.vertical_anchor = MSO_ANCHOR.MIDDLE
+_wp = _wtf.paragraphs[0]; _wp.alignment = PP_ALIGN.CENTER
+_wr = _wp.add_run(); _wr.text = "Benchmark Workload"; _set_font(_wr, 14, True, WORK)
+
+box(s, inch(6.15), inch(4.72), inch(2.7), inch(0.70), "OTEL collector", WORK, WORK,
+    font=12.5, font_color=WHITE, sub="workload spans → MLflow", sub_color=LTTEAL)
+
+connector(s, inch(1.8), inch(2.15), inch(1.8), inch(2.45)); dot(inch(2.05), inch(2.30), 1)
+connector(s, inch(3.2), inch(3.15), inch(4.35), inch(3.15), color=ROSSO); dot(inch(3.78), inch(2.96), 2)
+connector(s, inch(6.9), inch(3.00), inch(9.15), inch(3.00), color=ROSSO); dot(inch(8.02), inch(2.81), 3)
+connector(s, inch(3.2), inch(4.10), inch(9.15), inch(3.70), color=WORK); dot(inch(7.70), inch(3.79), 4)
+connector(s, inch(2.15), inch(4.30), inch(2.15), inch(4.75), color=STORE); dot(inch(2.15), inch(4.52), 5)
+connector(s, inch(9.55), inch(3.90), inch(8.85), inch(4.72), color=WORK, dashed=True)
+dot(inch(9.25), inch(4.33), "6a")
+connector(s, inch(6.15), inch(5.07), inch(3.2), inch(5.24), color=STORE, dashed=True)
+dot(inch(4.65), inch(5.155), "6b")
+connector(s, inch(2.9), inch(4.75), inch(2.9), inch(4.30), color=STORE); dot(inch(2.9), inch(4.52), 7)
+connector(s, inch(1.1), inch(4.30), inch(1.1), inch(4.75), color=ACCENT); dot(inch(0.88), inch(4.52), 8)
+
+_lgl = ["1  Client → Service:  one bearer token, one hostname",
+        "2  Service → deployment helper:  create the workload",
+        "3  helper → Benchmark Workload:  MCP tool + A2A agent",
+        "4  Service → Benchmark Workload:  run the benchmark"]
+_lgr = ["5  Service → MLflow:  emit the per-task trace",
+        "6a Workload → OTEL collector  ·  6b collector → MLflow",
+        "7  MLflow → Service:  read the records back",
+        "8  Service → S3:  export the run's artifacts"]
+_lb = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, inch(0.4), inch(5.85), inch(12.5), inch(1.15))
+_lb.fill.solid(); _lb.fill.fore_color.rgb = RGBColor(0xF4, 0xF6, 0xF8)
+_lb.line.color.rgb = BORDER; _lb.shadow.inherit = False
+for _cx, _items in ((inch(0.6), _lgl), (inch(6.7), _lgr)):
+    _ltf = s.shapes.add_textbox(_cx, inch(5.95), inch(6.0), inch(1.0)).text_frame
+    _ltf.word_wrap = True
+    for _i, _it in enumerate(_items):
+        _pa = _ltf.paragraphs[0] if _i == 0 else _ltf.add_paragraph()
+        _pa.space_after = Pt(0)
+        _ru = _pa.add_run(); _ru.text = _it; _set_font(_ru, 11, False, INK)
+
+# ================================================== SLIDE 5: ARCHITECTURE
+s = prs.slides.add_slide(BLANK)
+title_band(s, "3.  Architecture", "Relations between client, service, cluster-specific Keycloak / Rossoctl / workload, MLflow & S3")
 
 # Client (off-cluster / host)
 box(s, inch(0.4), inch(1.30), inch(2.8), inch(0.85),
@@ -334,7 +439,7 @@ kc = box(s, inch(4.35), inch(1.95), inch(2.55), inch(1.0),
          "Keycloak", KC, KC, font=13, font_color=WHITE,
          sub="issuer + backchannel", sub_color=LTORANGE)
 ro = box(s, inch(4.35), inch(3.2), inch(2.55), inch(1.1),
-         "Rossoctl / Kagenti", ROSSO, ROSSO, font=13, font_color=WHITE,
+         "Rossoctl", ROSSO, ROSSO, font=13, font_color=WHITE,
          sub="backend API (server-side ops)", sub_color=LTPURPLE)
 
 # Workload group
@@ -353,16 +458,7 @@ box(s, inch(9.35), inch(3.35), inch(3.05), inch(0.8), "A2A agent", WORK, WORK,
 box(s, inch(6.15), inch(4.72), inch(2.7), inch(0.70), "OTEL collector", WORK, WORK,
     font=12.5, font_color=WHITE, sub="forwards agent spans → MLflow", sub_color=LTTEAL)
 
-# ---- connectors (numbered) ----
-def dot(cx, cy, n):
-    dia = 0.26 if len(str(n)) < 2 else 0.34  # widen for 2-digit numbers so they don't wrap
-    d = s.shapes.add_shape(MSO_SHAPE.OVAL, int(cx) - inch(dia / 2), int(cy) - inch(dia / 2), inch(dia), inch(dia))
-    d.fill.solid(); d.fill.fore_color.rgb = ACCENT; d.line.color.rgb = WHITE; d.line.width = Pt(1)
-    d.shadow.inherit = False
-    tf = d.text_frame; tf.word_wrap = False
-    tf.margin_left = 0; tf.margin_right = 0; tf.margin_top = 0; tf.margin_bottom = 0
-    p = tf.paragraphs[0]; p.alignment = PP_ALIGN.CENTER
-    r = p.add_run(); r.text = str(n); _set_font(r, 10.5, True, WHITE)
+# ---- connectors (numbered): dot() is a module-level helper (see above) ----
 
 # 1 Client -> Keycloak (get caller JWT)
 connector(s, inch(3.2), inch(1.7), inch(4.35), inch(2.25))
@@ -442,7 +538,7 @@ for col_x, items in ((inch(0.6), legend_l), (inch(6.7), legend_r)):
 # the workload is NOT the same shape for every benchmark: two of the four components are optional,
 # and how many LLMs a task involves depends on the benchmark and on the plugin preset.
 s = prs.slides.add_slide(BLANK)
-title_band(s, "3.  Architecture with Workload Specific Components",
+title_band(s, "4.  Architecture with Workload Specific Components",
            "Inside the Benchmark Workload — what every benchmark has, and what only some of them add")
 
 
@@ -591,7 +687,7 @@ for i, item in enumerate(flows):
 
 # ================================================ SLIDE 6: TWO-TOKEN AUTH
 s = prs.slides.add_slide(BLANK)
-title_band(s, "4.  The Two-Token Auth Model", "Why the caller's token is never forwarded upstream")
+title_band(s, "5.  The Two-Token Auth Model", "Why the caller's token is never forwarded upstream")
 
 box(s, inch(0.5), inch(1.4), inch(5.9), inch(0.5), "Caller JWT  (inbound)", CLIENT, CLIENT,
     font=15, font_color=WHITE, shape=MSO_SHAPE.RECTANGLE)
@@ -621,7 +717,7 @@ box(s, inch(1.6), inch(5.7), inch(10.1), inch(1.1),
 
 # ============================================ SLIDE 7: CATALOG + LIFECYCLE
 s = prs.slides.add_slide(BLANK)
-title_band(s, "5.  Benchmark Catalog & Run Lifecycle")
+title_band(s, "6.  Benchmark Catalog & Run Lifecycle")
 
 box(s, inch(0.45), inch(1.25), inch(5.75), inch(0.5), "Catalog (static registry)", NAVY, NAVY,
     font=15, font_color=WHITE, shape=MSO_SHAPE.RECTANGLE)
@@ -667,7 +763,7 @@ connector(s, inch(6.72), inch(2.1), inch(6.72), inch(6.4), color=ACCENT, width=1
 # Every figure is measured from our own v1.24/v1.23 runs, over rows with intact telemetry -- not
 # quoted from the benchmarks' published papers.
 s = prs.slides.add_slide(BLANK)
-title_band(s, "6.1  The Three Benchmarks — a Difficulty Ladder",
+title_band(s, "7.1  The Three Benchmarks — a Difficulty Ladder",
            "Not interchangeable suites: each costs ~an order of magnitude more than the last")
 grid(s, inch(0.45), inch(1.30), inch(12.4), inch(4.35), [
     ("", "gsm8k", "tau2", "appworld"),
@@ -692,7 +788,7 @@ _ban.text_frame.margin_left = _ban.text_frame.margin_right = Pt(18)
 
 # ---- what each one is actually for ----
 s = prs.slides.add_slide(BLANK)
-title_band(s, "6.2  What Each Benchmark Stresses",
+title_band(s, "7.2  What Each Benchmark Stresses",
            "Why all three are in the matrix, and what a result from each does and does not tell you")
 cards = [
     ("gsm8k", "the canary", WORK, LTTEAL, [
@@ -757,7 +853,7 @@ grid(s, inch(0.45), inch(5.70), inch(12.4), inch(1.45), [
 
 # ---- the traps ----
 s = prs.slides.add_slide(BLANK)
-title_band(s, "6.3  Reading the Numbers — Five Things That Mislead",
+title_band(s, "7.3  Reading the Numbers — Five Things That Mislead",
            "Every one of these cost us a wrong conclusion first")
 traps = [
     ("pass_rate = evaluated_pass / total",
@@ -795,7 +891,7 @@ for i, (head, body_text) in enumerate(traps, 1):
 # ============================ SLIDES 12-15: THE 12-RUN MATRIX AND WHAT IT SHOWED
 # Every figure is read from the v1.24 matrices' own mirrored artifacts (results/12run-*.md).
 s = prs.slides.add_slide(BLANK)
-title_band(s, "7.1  The Canonical 12-Run Matrix",
+title_band(s, "8.1  The Canonical 12-Run Matrix",
            "One fixed set of 12 request bodies — the same on every platform, every version")
 grid(s, inch(0.45), inch(1.30), inch(12.4), inch(3.95), [
     ("#", "benchmark", "tasks", "parallel", "what it varies"),
@@ -824,7 +920,7 @@ _m.text_frame.margin_left = _m.text_frame.margin_right = Pt(18)
 
 # ---- 7.2 what it measured ----
 s = prs.slides.add_slide(BLANK)
-title_band(s, "7.2  What the 12 Runs Measured",
+title_band(s, "8.2  What the 12 Runs Measured",
            "v1.24 on OpenShift (Service on ykt3, workloads on ykt2) — 138 tasks, all 12 legs succeeded")
 grid(s, inch(0.45), inch(1.30), inch(6.05), inch(4.15), [
     ("#", "bench", "pass", "wall", "input tokens"),
@@ -869,7 +965,7 @@ for head, body_text in notes:
 
 # ---- 8.1 cross-platform ----
 s = prs.slides.add_slide(BLANK)
-title_band(s, "8.1  OpenShift vs KinD — Like-for-Like",
+title_band(s, "9.1  OpenShift vs KinD — Like-for-Like",
            "Same 12 request bodies, same Service version, verified-identical instance config")
 grid(s, inch(0.45), inch(1.30), inch(7.55), inch(4.20), [
     ("#", "bench", "pass OCP", "pass KinD", "in OCP", "in KinD", ""),
@@ -914,7 +1010,7 @@ for head, body_text in find:
 
 # ---- 8.2 plugin overhead ----
 s = prs.slides.add_slide(BLANK)
-title_band(s, "8.2  What AuthBridge Costs",
+title_band(s, "9.2  What AuthBridge Costs",
            "Legs #3 and #5–8 ran byte-identical work, so latency differences are the plugin config")
 grid(s, inch(0.45), inch(1.30), inch(6.35), inch(1.90), [
     ("component", "cost", "measured from"),
@@ -958,7 +1054,7 @@ for head, body_text in pts:
 
 # ============================================ SLIDE 16: BOUNDARIES
 s = prs.slides.add_slide(BLANK)
-title_band(s, "9.  What the Service Can & Cannot Enact", "The HTTP-only boundary, made explicit")
+title_band(s, "10.  What the Service Can & Cannot Enact", "The HTTP-only boundary, made explicit")
 
 box(s, inch(0.5), inch(1.35), inch(5.9), inch(0.5), "✓  Enacts over HTTP", CLIENT, CLIENT,
     font=15, font_color=WHITE, shape=MSO_SHAPE.RECTANGLE)
