@@ -1,6 +1,6 @@
 # Benchmarking Service — Developer Guide
 
-**Last modified:** 2026-09-03T01:10:37Z
+**Last modified:** 2026-09-03T01:22:20Z
 
 > Hand-maintained, unlike the generated `results/12run-*.md` files which stamp themselves. Bump the
 > line above when you edit this guide.
@@ -14,6 +14,44 @@ multi-turn) on the `ykt3` and `kind-rossoctl` clusters.
 - Design rationale (what the Service can and cannot enact) lives in
   [`SERVICE_DESIGN_DECISIONS.md`](./SERVICE_DESIGN_DECISIONS.md) and
   [`KUBECTL_DEPENDENCY_INVENTORY.md`](./KUBECTL_DEPENDENCY_INVENTORY.md).
+
+**In a hurry?** §2 gets you a token, §6.0 is one benchmark run start to finish as copy-pasteable
+`curl`, and §6.1 is the same thing as a single command.
+
+<!-- toc -->
+
+**Contents**
+
+- [1. Mental model (read this first)](#1-mental-model-read-this-first)
+  - [Endpoint map](#endpoint-map)
+- [2. Getting a caller token](#2-getting-a-caller-token)
+- [3. Onboarding a benchmark (one-time, per cluster/instance)](#3-onboarding-a-benchmark-one-time-per-clusterinstance)
+  - [3.1 Instance config file (`instances/<encoded-iss-host>.json`)](#31-instance-config-file-instancesencoded-iss-hostjson)
+  - [3.2 Infrastructure resources (baked into the benchmark definitions)](#32-infrastructure-resources-baked-into-the-benchmark-definitions)
+  - [3.3 Workload secrets (provisioned out-of-band as cluster Secrets)](#33-workload-secrets-provisioned-out-of-band-as-cluster-secrets)
+  - [3.4 MLflow + OTEL collector (optional, for reports)](#34-mlflow--otel-collector-optional-for-reports)
+- [4. Instance-specific Service config (`/config`)](#4-instance-specific-service-config-config)
+- [5. Benchmark lifecycle](#5-benchmark-lifecycle)
+  - [5.0 Discover what's available](#50-discover-whats-available)
+  - [5.1 Deploy (create the MCP tool + A2A agent)](#51-deploy-create-the-mcp-tool--a2a-agent)
+  - [5.2 Wait until Ready](#52-wait-until-ready)
+  - [5.3 Submit a run](#53-submit-a-run)
+  - [5.4 Poll run status / list runs](#54-poll-run-status--list-runs)
+  - [5.5 Get results (report)](#55-get-results-report)
+  - [5.6 Download output files from S3](#56-download-output-files-from-s3)
+  - [5.7 Tear down](#57-tear-down)
+- [6. End-to-end examples (validated flows)](#6-end-to-end-examples-validated-flows)
+  - [6.0 Run #1 start to finish, on the ykt3 Service driving ykt2 workloads](#60-run-1-start-to-finish-on-the-ykt3-service-driving-ykt2-workloads)
+  - [6.1 The same thing in one command (`benchmarking-cli`)](#61-the-same-thing-in-one-command-benchmarking-cli)
+  - [6.2 Other validated flows](#62-other-validated-flows)
+- [7. Known limits & error codes](#7-known-limits--error-codes)
+- [8. Extending the catalog (adding or changing a benchmark)](#8-extending-the-catalog-adding-or-changing-a-benchmark)
+  - [8.1 What a definition holds](#81-what-a-definition-holds)
+  - [8.2 Add a new benchmark](#82-add-a-new-benchmark)
+  - [8.3 Change an existing benchmark](#83-change-an-existing-benchmark)
+  - [8.4 What stays runtime-mutable (for contrast)](#84-what-stays-runtime-mutable-for-contrast)
+
+<!-- /toc -->
 
 ---
 
