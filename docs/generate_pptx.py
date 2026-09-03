@@ -205,7 +205,7 @@ items = [
     ("The two-token auth model", "why the caller's token is never forwarded upstream"),
     ("Benchmark catalog & run lifecycle", "the three benchmarks and the REST flow that drives them"),
     ("The three benchmarks — what they measure",
-     "a difficulty ladder, what each stresses, and how to read the numbers"),
+     "6.1 a difficulty ladder · 6.2 what each stresses · 6.3 how to read the numbers"),
     ("What the Service can & cannot enact", "the HTTP-only boundary, made explicit"),
 ]
 y = inch(1.35)
@@ -224,7 +224,7 @@ for i, (head, sub) in enumerate(items, 1):
 
 # ================================================ SLIDE 3: OVERVIEW + DECISIONS
 s = prs.slides.add_slide(BLANK)
-title_band(s, "Overview & Key Design Decisions")
+title_band(s, "1.  Overview & Key Design Decisions")
 
 # Left column: What it is
 box(s, inch(0.45), inch(1.25), inch(5.9), inch(0.55), "What it is",
@@ -272,7 +272,7 @@ for head, body in decisions:
 
 # ================================================== SLIDE 4: ARCHITECTURE
 s = prs.slides.add_slide(BLANK)
-title_band(s, "Architecture", "Relations between client, service, cluster-specific Keycloak / Rossoctl / workload, MLflow & S3")
+title_band(s, "2.  Architecture", "Relations between client, service, cluster-specific Keycloak / Rossoctl / workload, MLflow & S3")
 
 # Client (off-cluster / host)
 box(s, inch(0.4), inch(1.30), inch(2.8), inch(0.85),
@@ -425,7 +425,7 @@ for col_x, items in ((inch(0.6), legend_l), (inch(6.7), legend_r)):
 # the workload is NOT the same shape for every benchmark: two of the four components are optional,
 # and how many LLMs a task involves depends on the benchmark and on the plugin preset.
 s = prs.slides.add_slide(BLANK)
-title_band(s, "Architecture with Workload Specific Components",
+title_band(s, "3.  Architecture with Workload Specific Components",
            "Inside the Benchmark Workload — what every benchmark has, and what only some of them add")
 
 
@@ -574,7 +574,7 @@ for i, item in enumerate(flows):
 
 # ================================================ SLIDE 6: TWO-TOKEN AUTH
 s = prs.slides.add_slide(BLANK)
-title_band(s, "The Two-Token Auth Model", "Why the caller's token is never forwarded upstream")
+title_band(s, "4.  The Two-Token Auth Model", "Why the caller's token is never forwarded upstream")
 
 box(s, inch(0.5), inch(1.4), inch(5.9), inch(0.5), "Caller JWT  (inbound)", CLIENT, CLIENT,
     font=15, font_color=WHITE, shape=MSO_SHAPE.RECTANGLE)
@@ -604,7 +604,7 @@ box(s, inch(1.6), inch(5.7), inch(10.1), inch(1.1),
 
 # ============================================ SLIDE 7: CATALOG + LIFECYCLE
 s = prs.slides.add_slide(BLANK)
-title_band(s, "Benchmark Catalog & Run Lifecycle")
+title_band(s, "5.  Benchmark Catalog & Run Lifecycle")
 
 box(s, inch(0.45), inch(1.25), inch(5.75), inch(0.5), "Catalog (static registry)", NAVY, NAVY,
     font=15, font_color=WHITE, shape=MSO_SHAPE.RECTANGLE)
@@ -650,7 +650,7 @@ connector(s, inch(6.72), inch(2.1), inch(6.72), inch(6.4), color=ACCENT, width=1
 # Every figure is measured from our own v1.24/v1.23 runs, over rows with intact telemetry -- not
 # quoted from the benchmarks' published papers.
 s = prs.slides.add_slide(BLANK)
-title_band(s, "The Three Benchmarks — a Difficulty Ladder",
+title_band(s, "6.1  The Three Benchmarks — a Difficulty Ladder",
            "Not interchangeable suites: each costs ~an order of magnitude more than the last")
 grid(s, inch(0.45), inch(1.30), inch(12.4), inch(4.35), [
     ("", "gsm8k", "tau2", "appworld"),
@@ -675,7 +675,7 @@ _ban.text_frame.margin_left = _ban.text_frame.margin_right = Pt(18)
 
 # ---- what each one is actually for ----
 s = prs.slides.add_slide(BLANK)
-title_band(s, "What Each Benchmark Stresses",
+title_band(s, "6.2  What Each Benchmark Stresses",
            "Why all three are in the matrix, and what a result from each does and does not tell you")
 cards = [
     ("gsm8k", "the canary", WORK, LTTEAL, [
@@ -740,7 +740,7 @@ grid(s, inch(0.45), inch(5.70), inch(12.4), inch(1.45), [
 
 # ---- the traps ----
 s = prs.slides.add_slide(BLANK)
-title_band(s, "Reading the Numbers — Five Things That Mislead",
+title_band(s, "6.3  Reading the Numbers — Five Things That Mislead",
            "Every one of these cost us a wrong conclusion first")
 traps = [
     ("pass_rate = evaluated_pass / total",
@@ -776,7 +776,7 @@ for i, (head, body_text) in enumerate(traps, 1):
 
 # ============================================ SLIDE 11: BOUNDARIES
 s = prs.slides.add_slide(BLANK)
-title_band(s, "What the Service Can & Cannot Enact", "The HTTP-only boundary, made explicit")
+title_band(s, "7.  What the Service Can & Cannot Enact", "The HTTP-only boundary, made explicit")
 
 box(s, inch(0.5), inch(1.35), inch(5.9), inch(0.5), "✓  Enacts over HTTP", CLIENT, CLIENT,
     font=15, font_color=WHITE, shape=MSO_SHAPE.RECTANGLE)
