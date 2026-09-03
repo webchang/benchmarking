@@ -372,11 +372,11 @@ dot(inch(4.78), inch(5.145), "6b")
 connector(s, inch(3.05), inch(4.75), inch(3.05), inch(4.30), color=STORE); dot(inch(3.05), inch(4.52), 7)
 connector(s, inch(1.05), inch(4.30), inch(1.05), inch(4.75), color=ACCENT); dot(inch(0.83), inch(4.52), 8)
 
-_lgl = ["1  Client → Service:  one bearer token, one hostname",
-        "2  Service → deployment helper:  create the workload",
-        "3  helper → harnessed workload:  MCP tool + A2A agent",
-        "4  Service → harnessed workload:  run the benchmark"]
-_lgr = ["5  Service → Experiment Tracker:  emit the per-task trace",
+_lgl = ["1  Client → Service",
+        "2  Service → deployment helper:  create the harnessed workload",
+        "3  helper → harnessed workload",
+        "4  Service → harnessed workload:  run and monitor benchmark execution"]
+_lgr = ["5  Service → Experiment Tracker:  emit the trace",
         "6a workload → Telemetry Collector  ·  6b collector → Tracker",
         "7  Experiment Tracker → Service:  read the records back",
         "8  Service → shared store:  export the run's artifacts"]
