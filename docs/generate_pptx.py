@@ -312,8 +312,7 @@ title_band(s, "2.  Auto-Benchmarking Design Motif",
            "One client, one Service, N workload deployments — and every result ends up in one place")
 
 box(s, inch(0.4), inch(1.30), inch(2.8), inch(0.85),
-    "Benchmarking Client", CLIENT, CLIENT, font=13.5, font_color=WHITE,
-    sub="off-cluster (host / CI)", sub_color=RGBColor(0xE6, 0xF0, 0xE6))
+    "Benchmarking Client", CLIENT, CLIENT, font=13.5, font_color=WHITE)
 
 sv = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, inch(0.4), inch(2.45), inch(2.8), inch(1.85))
 sv.fill.solid(); sv.fill.fore_color.rgb = BLUE; sv.line.color.rgb = BLUE; sv.shadow.inherit = False
@@ -327,8 +326,8 @@ for _txt in ("deploy the workload", "run the benchmark", "read + export results"
 
 box(s, inch(0.4), inch(4.75), inch(1.35), inch(0.95), "S3", STORE, ACCENT,
     font=13, font_color=WHITE, sub="shared sink", sub_color=LTGRAY)
-box(s, inch(1.85), inch(4.75), inch(1.35), inch(0.95), "MLflow", STORE, STORE,
-    font=13, font_color=WHITE, sub="traces", sub_color=LTGRAY)
+box(s, inch(1.85), inch(4.75), inch(1.55), inch(0.95), "Experiment Tracker", STORE, STORE,
+    font=11.5, font_color=WHITE)
 
 # the instances container — stacked shadow implies "many of these"
 CX3, CY3, CW3, CH3 = inch(4.05), inch(1.2), inch(8.75), inch(4.35)
@@ -345,21 +344,19 @@ _c3.shadow.inherit = False
 textbox(s, inch(4.25), inch(1.30), inch(8.4), inch(0.4),
         [("Workload Deployment Instances", 13, True, NAVY)])
 
-# The full name on one label, not split title/sub: "Benchmark workload" alone as a heading collided
-# visually with the "Benchmark Workload" box to its right.
 box(s, inch(4.35), inch(2.60), inch(2.55), inch(1.35),
-    "Benchmark workload deployment helper", ROSSO, ROSSO, font=12.5, font_color=WHITE,
-    sub="creates the MCP tool + A2A agent", sub_color=LTPURPLE)
+    "Deployment helper for harnessed benchmark workload", ROSSO, ROSSO, font=12,
+    font_color=WHITE)
 
 _wg = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, inch(9.15), inch(2.30), inch(3.45), inch(1.60))
 _wg.fill.solid(); _wg.fill.fore_color.rgb = LTTEAL
 _wg.line.color.rgb = WORK; _wg.line.width = Pt(1.25); _wg.shadow.inherit = False
 _wtf = _wg.text_frame; _wtf.vertical_anchor = MSO_ANCHOR.MIDDLE
 _wp = _wtf.paragraphs[0]; _wp.alignment = PP_ALIGN.CENTER
-_wr = _wp.add_run(); _wr.text = "Benchmark Workload"; _set_font(_wr, 14, True, WORK)
+_wr = _wp.add_run(); _wr.text = "Harnessed benchmark workload"; _set_font(_wr, 14, True, WORK)
 
-box(s, inch(6.15), inch(4.72), inch(2.7), inch(0.70), "OTEL collector", WORK, WORK,
-    font=12.5, font_color=WHITE, sub="workload spans → MLflow", sub_color=LTTEAL)
+box(s, inch(6.15), inch(4.72), inch(2.7), inch(0.70), "Telemetry Collector", WORK, WORK,
+    font=12.5, font_color=WHITE)
 
 connector(s, inch(1.8), inch(2.15), inch(1.8), inch(2.45)); dot(inch(2.05), inch(2.30), 1)
 connector(s, inch(3.2), inch(3.15), inch(4.35), inch(3.15), color=ROSSO); dot(inch(3.78), inch(2.96), 2)
@@ -368,18 +365,18 @@ connector(s, inch(3.2), inch(4.10), inch(9.15), inch(3.70), color=WORK); dot(inc
 connector(s, inch(2.15), inch(4.30), inch(2.15), inch(4.75), color=STORE); dot(inch(2.15), inch(4.52), 5)
 connector(s, inch(9.55), inch(3.90), inch(8.85), inch(4.72), color=WORK, dashed=True)
 dot(inch(9.25), inch(4.33), "6a")
-connector(s, inch(6.15), inch(5.07), inch(3.2), inch(5.24), color=STORE, dashed=True)
-dot(inch(4.65), inch(5.155), "6b")
+connector(s, inch(6.15), inch(5.07), inch(3.42), inch(5.22), color=STORE, dashed=True)
+dot(inch(4.78), inch(5.145), "6b")
 connector(s, inch(2.9), inch(4.75), inch(2.9), inch(4.30), color=STORE); dot(inch(2.9), inch(4.52), 7)
 connector(s, inch(1.1), inch(4.30), inch(1.1), inch(4.75), color=ACCENT); dot(inch(0.88), inch(4.52), 8)
 
 _lgl = ["1  Client → Service:  one bearer token, one hostname",
         "2  Service → deployment helper:  create the workload",
-        "3  helper → Benchmark Workload:  MCP tool + A2A agent",
-        "4  Service → Benchmark Workload:  run the benchmark"]
-_lgr = ["5  Service → MLflow:  emit the per-task trace",
-        "6a Workload → OTEL collector  ·  6b collector → MLflow",
-        "7  MLflow → Service:  read the records back",
+        "3  helper → harnessed workload:  MCP tool + A2A agent",
+        "4  Service → harnessed workload:  run the benchmark"]
+_lgr = ["5  Service → Experiment Tracker:  emit the per-task trace",
+        "6a workload → Telemetry Collector  ·  6b collector → Tracker",
+        "7  Experiment Tracker → Service:  read the records back",
         "8  Service → S3:  export the run's artifacts"]
 _lb = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, inch(0.4), inch(5.85), inch(12.5), inch(1.15))
 _lb.fill.solid(); _lb.fill.fore_color.rgb = RGBColor(0xF4, 0xF6, 0xF8)
